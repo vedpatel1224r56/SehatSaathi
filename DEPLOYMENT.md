@@ -9,7 +9,7 @@
 
 ## Required production environment
 
-Set these in `/Users/vedpatel/health-app/backend/.env` before any real deployment:
+Set these in `./backend/.env` before any real deployment:
 
 - `NODE_ENV=production`
 - `PORT=8080`
@@ -39,7 +39,7 @@ If ML triage is enabled, also set:
 
 ## Local production-style start
 
-From `/Users/vedpatel/health-app`:
+From the repo root:
 
 ```bash
 docker compose up --build
@@ -73,21 +73,21 @@ This code can now be containerized cleanly, but hospital deployment still requir
 Run ad-hoc backup:
 
 ```bash
-cd /Users/vedpatel/health-app/backend
+cd backend
 npm run backup:run
 ```
 
 Run restore verification (uses latest backup by default):
 
 ```bash
-cd /Users/vedpatel/health-app/backend
+cd backend
 npm run backup:restore-test
 ```
 
 Daily backup schedule example (macOS `launchd` or cron):
 
 ```bash
-cd /Users/vedpatel/health-app/backend
+cd backend
 BACKUP_RETENTION_DAYS=14 npm run backup:run
 ```
 
