@@ -6,14 +6,16 @@ html,
 body,
 #root {
   min-height: 100%;
-  background: #f7f9fb;
+  background: #F7F5F2;
 }
 
 body {
   margin: 0;
-  font-family: "Space Grotesk", sans-serif;
-  background: #f7f9fb;
-  color: #1b1b1b;
+  font-family: "Inter", system-ui, -apple-system, BlinkMacSystemFont, sans-serif;
+  background: #F7F5F2;
+  color: #1A1714;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
 
 a {
@@ -22,4 +24,5 @@ a {
 
 button {
   font-family: inherit;
+  cursor: pointer;
 }

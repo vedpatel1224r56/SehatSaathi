@@ -1,6 +1,9 @@
 const { buildUipDueVaccines, buildIapDueVaccines, calculateAgeMonths, UIP_SCHEDULE, IAP_SCHEDULE } = require("../services/pediatricsService");
 const { createDoctorAssistService } = require("../services/doctorAssistService");
 const { listReportCatalog, buildReportInsights } = require("../services/reportInsightsService");
+const { buildActionMap } = require("../services/actionMapService");
+
+const { deriveInterpretationBand } = require("../services/reportInsightsService");
 
 const registerClinicalRoutes = (fastify, deps) => {
   const { requireAuth, get, run, nowIso, isDoctorRole, crypto, canAccessConsult } = deps;
@@ -21,12 +24,71 @@ const registerClinicalRoutes = (fastify, deps) => {
   };
 
   const isBlankText = (value) => String(value || "").trim().length === 0;
+  const buildPlanScopeKey = (memberId = null) => (memberId ? `member:${Number(memberId)}` : "self");
+  const normalizeDoctorPlanTasks = (tasks = []) =>
+    (Array.isArray(tasks) ? tasks : [])
+      .map((task, index) => {
+        const label = String(task?.label || "").trim();
+        const note = String(task?.note || "").trim();
+        const id = String(task?.id || `doctor_task_${index + 1}`).trim();
+        if (!label) return null;
+        return {
+          id,
+          label,
+          note,
+          origin: task?.origin === "doctor" ? "doctor" : "ai",
+          editedByDoctor: Boolean(task?.editedByDoctor),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
 
   const normalizePediatricSex = (value) => {
     const normalized = String(value || "").trim().toLowerCase();
     if (normalized === "male" || normalized === "m" || normalized === "boy") return "boys";
     if (normalized === "female" || normalized === "f" || normalized === "girl") return "girls";
     return null;
+  };
+
+  const buildPatientContextFromDb = async ({ userId, memberId = null }) => {
+    try {
+      if (memberId) {
+        const member = await deps.get(
+          `SELECT age, sex, conditions, allergies FROM family_members WHERE user_id = ? AND id = ?`,
+          [userId, memberId],
+        );
+        if (!member) return {};
+        const safeList = (value) => {
+          if (!value) return [];
+          try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+        };
+        return {
+          ageYears: member.age ? Number(member.age) : null,
+          sex: member.sex || "",
+          chronicConditions: safeList(member.conditions),
+          allergies: safeList(member.allergies),
+          medications: [],
+        };
+      }
+      const profile = await deps.get(
+        `SELECT age, sex, conditions, allergies, medications FROM profiles WHERE user_id = ?`,
+        [userId],
+      );
+      if (!profile) return {};
+      const safeList = (value) => {
+        if (!value) return [];
+        try { const parsed = JSON.parse(value); return Array.isArray(parsed) ? parsed : []; } catch { return []; }
+      };
+      return {
+        ageYears: profile.age ? Number(profile.age) : null,
+        sex: profile.sex || "",
+        chronicConditions: safeList(profile.conditions),
+        allergies: safeList(profile.allergies),
+        medications: safeList(profile.medications),
+      };
+    } catch {
+      return {};
+    }
   };
 
   const buildPediatricsPayload = async ({ userId, memberId = null, dateOfBirth = "", referenceDate = nowIso() }) => {
@@ -105,7 +167,9 @@ const registerClinicalRoutes = (fastify, deps) => {
     const sectionAnalysisIds = sectionAnalyses.map((item) => item.id);
     const metrics = analysisIds.length
       ? await deps.all(
-          `SELECT id, analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, created_at
+          `SELECT id, analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, created_at,
+                  original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+                  original_value_text, normalized_value_text
            FROM medical_record_metrics
            WHERE analysis_id IN (${analysisIds.map(() => "?").join(",")})
            ORDER BY created_at ASC, id ASC`,
@@ -114,7 +178,9 @@ const registerClinicalRoutes = (fastify, deps) => {
       : [];
     const sectionMetrics = sectionAnalysisIds.length
       ? await deps.all(
-          `SELECT id, section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, created_at
+          `SELECT id, section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, created_at,
+                  original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+                  original_value_text, normalized_value_text
            FROM medical_record_section_metrics
            WHERE section_analysis_id IN (${sectionAnalysisIds.map(() => "?").join(",")})
            ORDER BY created_at ASC, id ASC`,
@@ -150,6 +216,14 @@ const registerClinicalRoutes = (fastify, deps) => {
             unit: item.unit || "",
             referenceLow: item.reference_low,
             referenceHigh: item.reference_high,
+            originalMetricLabel: item.original_metric_label || item.metric_label,
+            originalUnit: item.original_unit || item.unit || "",
+            originalReferenceLow: item.original_reference_low,
+            originalReferenceHigh: item.original_reference_high,
+            originalReferenceText: item.original_reference_text || "",
+            originalValueText: item.original_value_text || String(item.value_num ?? ""),
+            normalizedValueText: item.normalized_value_text || String(item.value_num ?? ""),
+            interpretationBand: item.interpretation_band || deriveInterpretationBand(item.value_num, item.reference_low, item.reference_high),
           })),
       })),
       ...sectionAnalyses.map((analysis) => ({
@@ -174,9 +248,18 @@ const registerClinicalRoutes = (fastify, deps) => {
             unit: item.unit || "",
             referenceLow: item.reference_low,
             referenceHigh: item.reference_high,
+            originalMetricLabel: item.original_metric_label || item.metric_label,
+            originalUnit: item.original_unit || item.unit || "",
+            originalReferenceLow: item.original_reference_low,
+            originalReferenceHigh: item.original_reference_high,
+            originalReferenceText: item.original_reference_text || "",
+            originalValueText: item.original_value_text || String(item.value_num ?? ""),
+            normalizedValueText: item.normalized_value_text || String(item.value_num ?? ""),
+            interpretationBand: item.interpretation_band || deriveInterpretationBand(item.value_num, item.reference_low, item.reference_high),
           })),
       })),
     ];
+    const patientContext = await buildPatientContextFromDb({ userId, memberId });
     return {
       catalog: reportCatalog,
       records: records.map((record) => ({
@@ -194,7 +277,11 @@ const registerClinicalRoutes = (fastify, deps) => {
           };
         })(),
       })),
-      insights: buildReportInsights({ analyses: analysisRows, months }),
+      insights: (() => {
+        const ins = buildReportInsights({ analyses: analysisRows, months });
+        ins.actionMap = buildActionMap(ins.trends || [], "en", patientContext);
+        return ins;
+      })(),
     };
   };
 
@@ -587,6 +674,139 @@ const registerClinicalRoutes = (fastify, deps) => {
       memberId: appointment.member_id || null,
       months,
     });
+  });
+
+  fastify.get("/api/appointments/:appointmentId/health-plan", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    if (!isDoctorRole(request.authUser.role)) {
+      return reply.code(403).send({ error: "Doctor or admin access required." });
+    }
+    const appointmentId = Number(request.params.appointmentId);
+    if (!appointmentId) return reply.code(400).send({ error: "Invalid appointment id." });
+
+    const appointment = await get(
+      `SELECT a.id, a.user_id, a.member_id, a.doctor_id
+       FROM appointments a
+       WHERE a.id = ?`,
+      [appointmentId],
+    );
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found." });
+    if (
+      request.authUser.role !== "admin" &&
+      Number(appointment.doctor_id) !== Number(request.authUser.id)
+    ) {
+      return reply.code(403).send({ error: "Only the assigned doctor can review this plan." });
+    }
+
+    const scopeKey = buildPlanScopeKey(appointment.member_id || null);
+    const plan = await get(
+      `SELECT php.id, php.focus_key, php.title, php.subtitle, php.goal, php.focus_title, php.focus_summary,
+              php.progress_json, php.plan_source, php.doctor_notes, php.doctor_updated_at,
+              php.doctor_user_id, php.doctor_override_json, u.name AS doctor_name
+       FROM patient_health_plans php
+       LEFT JOIN users u ON u.id = php.doctor_user_id
+       WHERE php.user_id = ?
+         AND php.scope_key = ?
+       ORDER BY php.updated_at DESC, php.id DESC
+       LIMIT 1`,
+      [appointment.user_id, scopeKey],
+    );
+    if (!plan) {
+      return reply.code(404).send({ error: "No saved action plan exists for this patient yet." });
+    }
+
+    return {
+      plan: {
+        id: plan.id,
+        focusKey: plan.focus_key,
+        title: plan.title,
+        subtitle: plan.subtitle || "",
+        goal: plan.goal || "",
+        focusTitle: plan.focus_title || "",
+        focusSummary: plan.focus_summary || "",
+        progress: plan.progress_json ? safeJsonParse(plan.progress_json, {}) : {},
+        planSource: plan.plan_source || "ai",
+        doctorNotes: plan.doctor_notes || "",
+        doctorUpdatedAt: plan.doctor_updated_at || null,
+        doctorUserId: plan.doctor_user_id || null,
+        doctorName: plan.doctor_name || "",
+        doctorOverride: plan.doctor_override_json ? safeJsonParse(plan.doctor_override_json, {}) : {},
+      },
+    };
+  });
+
+  fastify.patch("/api/appointments/:appointmentId/health-plan", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    if (!isDoctorRole(request.authUser.role)) {
+      return reply.code(403).send({ error: "Doctor or admin access required." });
+    }
+    const appointmentId = Number(request.params.appointmentId);
+    if (!appointmentId) return reply.code(400).send({ error: "Invalid appointment id." });
+
+    const appointment = await get(
+      `SELECT a.id, a.user_id, a.member_id, a.doctor_id
+       FROM appointments a
+       WHERE a.id = ?`,
+      [appointmentId],
+    );
+    if (!appointment) return reply.code(404).send({ error: "Appointment not found." });
+    if (
+      request.authUser.role !== "admin" &&
+      Number(appointment.doctor_id) !== Number(request.authUser.id)
+    ) {
+      return reply.code(403).send({ error: "Only the assigned doctor can adjust this plan." });
+    }
+
+    const scopeKey = buildPlanScopeKey(appointment.member_id || null);
+    const plan = await get(
+      `SELECT id, focus_key
+       FROM patient_health_plans
+       WHERE user_id = ?
+         AND scope_key = ?
+       ORDER BY updated_at DESC, id DESC
+       LIMIT 1`,
+      [appointment.user_id, scopeKey],
+    );
+    if (!plan) {
+      return reply.code(404).send({ error: "No saved action plan exists for this patient yet." });
+    }
+
+    const requestedStatus = String(request.body?.reviewStatus || "").trim().toLowerCase();
+    if (!["doctor_reviewed", "doctor_adjusted"].includes(requestedStatus)) {
+      return reply.code(400).send({ error: "reviewStatus must be doctor_reviewed or doctor_adjusted." });
+    }
+    const doctorNotes = String(request.body?.doctorNotes || "").trim();
+    const reviewTimingNote = String(request.body?.reviewTimingNote || "").trim();
+    const tasks = normalizeDoctorPlanTasks(request.body?.tasks || []);
+    const override = {
+      reviewTimingNote,
+      tasks,
+    };
+    const now = nowIso();
+    await run(
+      `UPDATE patient_health_plans
+       SET plan_source = ?, doctor_notes = ?, doctor_updated_at = ?, doctor_user_id = ?, doctor_override_json = ?, updated_at = ?
+       WHERE id = ?`,
+      [
+        requestedStatus,
+        doctorNotes,
+        now,
+        request.authUser.id,
+        JSON.stringify(override),
+        now,
+        plan.id,
+      ],
+    );
+
+    return {
+      ok: true,
+      planId: plan.id,
+      focusKey: plan.focus_key,
+      planSource: requestedStatus,
+      doctorNotes,
+      doctorUpdatedAt: now,
+      doctorOverride: override,
+    };
   });
 
   fastify.post("/api/appointments/:appointmentId/encounter", async (request, reply) => {

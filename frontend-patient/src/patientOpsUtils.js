@@ -2,26 +2,20 @@ export const computeProfileCompletion = (profile = {}) => {
   const checks = [
     Boolean(String(profile.fullName || "").trim()),
     Boolean(String(profile.email || "").trim()),
-    Boolean(profile.registrationMode),
+    Boolean(String(profile.age || "").trim()),
     Boolean(profile.sex),
     Boolean(String(profile.phone || "").trim()),
-    Boolean(profile.maritalStatus),
-    Boolean(profile.dateOfBirth),
-    Boolean(profile.bloodGroup),
-    Boolean(String(profile.addressLine1 || profile.address || "").trim()),
-    Boolean(String(profile.city || "").trim()),
-    Boolean(String(profile.state || "").trim()),
-    Boolean(String(profile.pinCode || "").trim()),
-    Boolean(String(profile.emergencyContactName || "").trim()),
-    Boolean(String(profile.emergencyContactPhone || "").trim()),
+    Boolean(String(profile.abhaNumber || profile.abhaAddress || "").trim()),
   ];
   const done = checks.filter(Boolean).length;
   return Math.round((done / checks.length) * 100);
 };
 
 export const sortLabs = (labs = [], mode = "all", sortBy = "cheapest") => {
-  const getPrice = (lab) =>
-    mode === "home" && lab.homeStartingPrice !== null ? lab.homeStartingPrice : lab.startingPrice;
+  const getPrice = (lab) => {
+    const price = Number(lab.startingPrice || 0);
+    return price > 0 ? price : Number.POSITIVE_INFINITY;
+  };
   return [...labs].sort((a, b) => {
     if (sortBy === "fastest") return (a.etaMinutes || 0) - (b.etaMinutes || 0);
     if (sortBy === "nearest") return (a.distanceKm || 0) - (b.distanceKm || 0);

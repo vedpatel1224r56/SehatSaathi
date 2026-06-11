@@ -27,6 +27,7 @@ const resolveApiBase = () => {
 
 const API_BASE = resolveApiBase();
 const MARKETPLACE_REFRESH_KEY = "health_marketplace_requests_refresh";
+const ABHA_CREATE_URL = "https://abha.abdm.gov.in/";
 const defaultProfileForm = (account = {}) => ({
   fullName: account.name || "",
   email: account.email || "",
@@ -36,6 +37,7 @@ const defaultProfileForm = (account = {}) => ({
   sex: "",
   conditions: "",
   allergies: "",
+  medications: "",
   region: "",
   phone: "",
   abhaNumber: "",
@@ -51,9 +53,6 @@ const defaultProfileForm = (account = {}) => ({
   state: "",
   country: "India",
   pinCode: "",
-  emergencyContactName: "",
-  emergencyContactPhone: "",
-  registrationMode: "opd",
   visitTime: "OPD",
   unitDepartmentId: "",
   unitDoctorId: "",
@@ -122,7 +121,7 @@ const copy = {
     allergiesPlaceholder: "Example: penicillin, peanuts",
     saveProfile: "Save profile",
     historyTitle: "History",
-    historyEmpty: "No triage history yet.",
+    historyEmpty: "No guidance saved yet.",
     historySignIn: "Sign in to view your recent guidance.",
     historyShowMore: "Show full history",
     historyShowLess: "Show less",
@@ -147,7 +146,7 @@ const copy = {
     telePhone: "Phone for callback",
     teleBook: "Book teleconsult",
     teleStatus: "Status",
-    teleEmpty: "No teleconsult requests yet.",
+    teleEmpty: "No teleconsult requests saved yet.",
     teleOpenThread: "Open thread",
     teleThreadTitle: "Consult thread",
     teleMessagePlaceholder: "Share update for doctor...",
@@ -168,9 +167,9 @@ const copy = {
     apptDepartment: "Department",
     apptReason: "Reason",
     apptDateTime: "Preferred date/time",
-    apptEmpty: "No appointments yet.",
+    apptEmpty: "No appointments booked yet.",
     encounterTitle: "Doctor clinical records",
-    encounterEmpty: "No doctor records yet.",
+    encounterEmpty: "No doctor records saved yet.",
     encounterOpen: "Open record",
     encounterDoctor: "Doctor",
     encounterDiagnosis: "Diagnosis",
@@ -281,7 +280,7 @@ const copy = {
     memberOpenHistory: "Open history",
     memberOpenPass: "Generate pass",
     memberUploadDocs: "Upload reports",
-    memberNoTriage: "No triage yet",
+    memberNoTriage: "No guidance yet",
     chatTitle: "SehatSaathi Assistant",
     chatOpen: "Chat",
     chatPlaceholder: "Type your question...",
@@ -684,6 +683,7 @@ const fallbackTriage = (payload = {}) => {
 export {
   resolveApiBase,
   MARKETPLACE_REFRESH_KEY,
+  ABHA_CREATE_URL,
   defaultProfileForm,
   copy,
   commonSymptoms,

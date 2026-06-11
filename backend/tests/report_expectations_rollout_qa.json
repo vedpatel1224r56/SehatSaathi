@@ -1,0 +1,429 @@
+{
+  "01-hba1c-followup.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/01-hba1c-followup.pdf",
+    "sections": [
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 7.2,
+          "estimated_average_glucose": 160
+        }
+      }
+    ]
+  },
+  "02-cbc-panel.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/02-cbc-panel.pdf",
+    "sections": [
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "hemoglobin": 11.8,
+          "rbc_count": 4.32,
+          "pcv": 36.4,
+          "mcv": 84.3,
+          "mch": 27.4,
+          "mchc": 32.6,
+          "rdw": 13.8,
+          "wbc": 7.9,
+          "esr": 18,
+          "platelets": 246
+        }
+      }
+    ]
+  },
+  "03-liver-function.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/03-liver-function.pdf",
+    "sections": [
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.6,
+          "sgpt_alt": 74,
+          "sgot_ast": 58
+        }
+      }
+    ]
+  },
+  "04-thyroid-profile.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/04-thyroid-profile.pdf",
+    "sections": [
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 6.4,
+          "t3": 116,
+          "t4": 7.8
+        }
+      }
+    ]
+  },
+  "05-lipid-profile.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/05-lipid-profile.pdf",
+    "sections": [
+      {
+        "reportType": "lipid",
+        "metrics": {
+          "total_cholesterol": 228,
+          "ldl": 149,
+          "hdl": 38,
+          "triglycerides": 212
+        }
+      }
+    ]
+  },
+  "06-renal-function.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/06-renal-function.pdf",
+    "sections": [
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.7,
+          "urea": 48,
+          "uric_acid": 6.9
+        }
+      }
+    ]
+  },
+  "07-glucose-series.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/07-glucose-series.pdf",
+    "sections": [
+      {
+        "reportType": "glucose",
+        "metrics": {
+          "fbs": 132,
+          "ppbs": 214,
+          "rbs": 188
+        }
+      }
+    ]
+  },
+  "08-comprehensive-bundle.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/08-comprehensive-bundle.pdf",
+    "sections": [
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 6.8,
+          "estimated_average_glucose": 148
+        }
+      },
+      {
+        "reportType": "crp",
+        "metrics": {
+          "crp_quantitative": 4
+        }
+      },
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "hemoglobin": 13.4,
+          "wbc": 8.4,
+          "platelets": 312
+        }
+      },
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 3.2
+        }
+      },
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.1,
+          "urea": 36
+        }
+      },
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.2,
+          "sgpt_alt": 42,
+          "sgot_ast": 34
+        }
+      }
+    ]
+  },
+  "scan-01-hba1c-followup.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-01-hba1c-followup.pdf",
+    "sections": [
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 7.2,
+          "estimated_average_glucose": 160
+        }
+      }
+    ]
+  },
+  "scan-02-cbc-panel.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-02-cbc-panel.pdf",
+    "sections": [
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "hemoglobin": 11.8,
+          "rbc_count": 4.32,
+          "pcv": 36.4,
+          "mcv": 84.3,
+          "mch": 27.4,
+          "mchc": 32.6,
+          "rdw": 13.8,
+          "wbc": 7.9,
+          "esr": 18,
+          "platelets": 246
+        }
+      }
+    ]
+  },
+  "scan-03-liver-function.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-03-liver-function.pdf",
+    "sections": [
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.6,
+          "sgpt_alt": 74,
+          "sgot_ast": 58
+        }
+      }
+    ]
+  },
+  "scan-04-thyroid-profile.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-04-thyroid-profile.pdf",
+    "sections": [
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 6.4,
+          "t3": 116,
+          "t4": 7.8
+        }
+      }
+    ]
+  },
+  "scan-lipid-profile.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-lipid-profile.pdf",
+    "sections": [
+      {
+        "reportType": "lipid",
+        "metrics": {
+          "total_cholesterol": 228,
+          "ldl": 149,
+          "hdl": 38,
+          "triglycerides": 212
+        }
+      }
+    ]
+  },
+  "scan-renal-function.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-renal-function.pdf",
+    "sections": [
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.7,
+          "urea": 48,
+          "uric_acid": 6.9
+        }
+      }
+    ]
+  },
+  "scan-glucose-series.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-glucose-series.pdf",
+    "sections": [
+      {
+        "reportType": "glucose",
+        "metrics": {
+          "fbs": 132,
+          "ppbs": 214,
+          "rbs": 188
+        }
+      }
+    ]
+  },
+  "scan-08-comprehensive-bundle.pdf": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/scan-08-comprehensive-bundle.pdf",
+    "sections": [
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "wbc": 8.4,
+          "platelets": 312
+        }
+      },
+      {
+        "reportType": "crp",
+        "metrics": {
+          "crp_quantitative": 4
+        }
+      },
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.2,
+          "sgpt_alt": 42,
+          "sgot_ast": 34
+        }
+      },
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.1,
+          "urea": 36
+        }
+      },
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 3.2
+        }
+      },
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 6.8,
+          "estimated_average_glucose": 148
+        }
+      }
+    ]
+  },
+  "photo-01-hba1c-followup.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-01-hba1c-followup.jpg",
+    "sections": [
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 7.2,
+          "estimated_average_glucose": 160
+        }
+      }
+    ]
+  },
+  "photo-02-cbc-panel.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-02-cbc-panel.jpg",
+    "sections": [
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "hemoglobin": 11.8,
+          "wbc": 7.9,
+          "esr": 18,
+          "platelets": 246
+        }
+      }
+    ]
+  },
+  "photo-05-lipid-profile.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-05-lipid-profile.jpg",
+    "sections": [
+      {
+        "reportType": "lipid",
+        "metrics": {
+          "total_cholesterol": 228,
+          "ldl": 149,
+          "hdl": 38,
+          "triglycerides": 212
+        }
+      }
+    ]
+  },
+  "photo-liver-function.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-liver-function.jpg",
+    "sections": [
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.6,
+          "sgpt_alt": 74,
+          "sgot_ast": 58
+        }
+      }
+    ]
+  },
+  "photo-thyroid-profile.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-thyroid-profile.jpg",
+    "sections": [
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 6.4,
+          "t3": 116,
+          "t4": 7.8
+        }
+      }
+    ]
+  },
+  "photo-comprehensive-bundle.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-comprehensive-bundle.jpg",
+    "sections": [
+      {
+        "reportType": "cbc",
+        "metrics": {
+          "hemoglobin": 13.4,
+          "wbc": 8.4,
+          "platelets": 312
+        }
+      },
+      {
+        "reportType": "crp",
+        "metrics": {
+          "crp_quantitative": 4
+        }
+      },
+      {
+        "reportType": "liver",
+        "metrics": {
+          "bilirubin_total": 1.2,
+          "sgpt_alt": 42,
+          "sgot_ast": 34
+        }
+      },
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.1,
+          "urea": 36
+        }
+      },
+      {
+        "reportType": "thyroid",
+        "metrics": {
+          "tsh": 3.2
+        }
+      },
+      {
+        "reportType": "hba1c",
+        "metrics": {
+          "hba1c": 6.8,
+          "estimated_average_glucose": 148
+        }
+      }
+    ]
+  },
+  "photo-06-renal-function.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-06-renal-function.jpg",
+    "sections": [
+      {
+        "reportType": "renal",
+        "metrics": {
+          "creatinine": 1.7,
+          "urea": 48,
+          "uric_acid": 6.9
+        }
+      }
+    ]
+  },
+  "photo-07-glucose-series.jpg": {
+    "filePath": "/Users/vedpatel/Desktop/Ops/test-assets/reports/variants/photo-07-glucose-series.jpg",
+    "sections": [
+      {
+        "reportType": "glucose",
+        "metrics": {
+          "fbs": 132,
+          "rbs": 188
+        }
+      }
+    ]
+  }
+}

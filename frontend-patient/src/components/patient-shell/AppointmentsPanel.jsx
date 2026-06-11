@@ -28,6 +28,19 @@ export function AppointmentsPanel({
   paymentLoadingKey,
   consultPaymentStatus,
 }) {
+  const renderEmptyState = (title, body) => (
+    <div className="patient-empty-state">
+      <div className="patient-empty-mark" aria-hidden="true">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.85" strokeLinecap="round" strokeLinejoin="round">
+          <rect x="4.5" y="5.5" width="15" height="14" rx="3" />
+          <path d="M8 4.5v3M16 4.5v3M4.5 10h15" />
+        </svg>
+      </div>
+      <p className="history-headline">{title}</p>
+      <p className="micro">{body}</p>
+    </div>
+  )
+
   const allowLocalPaymentBypass = Boolean(import.meta.env.DEV)
   const formatAppointmentStatus = (status) => {
     const normalized = String(status || '').toLowerCase()
@@ -37,8 +50,6 @@ export function AppointmentsPanel({
     if (!normalized) return '-'
     return normalized.replace(/_/g, ' ').replace(/\b\w/g, (char) => char.toUpperCase())
   }
-  const totalRequests = futureAppointments.length + pastAppointments.length + requestedAppointments.length + requestedCare.length
-  const nextScheduled = futureAppointments[0]
   const selectedDoctor = departmentDoctors.find((doctor) => String(doctor.id) === String(appointmentForm.doctorId))
   const selectedFee =
     careRequestMode === "chat"
@@ -55,240 +66,245 @@ export function AppointmentsPanel({
     if (normalized === "waived") return "Waived"
     return "Unpaid"
   }
+  const activeHistoryCount =
+    appointmentsViewTab === "future"
+      ? futureAppointments.length
+      : appointmentsViewTab === "past"
+        ? pastAppointments.length
+        : requestedAppointments.length + requestedCare.length
 
   return (
-    <section className="panel">
+    <section className="panel appointments-panel">
       <div className="appointments-shell-hero">
-        <div>
+        <div className="appointments-shell-copy">
           <p className="eyebrow">Appointments</p>
-          <h2>{t("careRequestFeedTitle")}</h2>
-          <p className="panel-sub">Book in-person visits or remote consults, then track every request and upcoming slot from one place.</p>
-        </div>
-        <div className="appointments-shell-stats">
-          <article className="appointments-shell-stat">
-            <span className="mini-label">Upcoming</span>
-            <strong>{futureAppointments.length}</strong>
-            <span className="micro">Visits already scheduled</span>
-          </article>
-          <article className="appointments-shell-stat">
-            <span className="mini-label">Requests</span>
-            <strong>{requestedAppointments.length + requestedCare.length}</strong>
-            <span className="micro">Pending approval or response</span>
-          </article>
-          <article className="appointments-shell-stat">
-            <span className="mini-label">Next slot</span>
-            <strong>{nextScheduled ? new Date(nextScheduled.scheduled_at).toLocaleDateString() : "-"}</strong>
-            <span className="micro">{nextScheduled?.department_name || nextScheduled?.department || "No booked visit yet"}</span>
-          </article>
+          <h2>Visits</h2>
+          <p className="panel-sub">Book a visit and keep requests easy to review.</p>
         </div>
       </div>
-      <form className="form" onSubmit={submitCareRequest}>
-        <div className="appointments-mode-strip">
-          <span className="micro strong">Request mode</span>
-          <span className="appointments-mode-pill">{careRequestMode === "in_person" ? "In-person visit" : `${careRequestMode} consult`}</span>
-        </div>
-        <label className="block">
-          {t("careRequestType")}
-          <select value={careRequestMode} onChange={(event) => setCareRequestMode(event.target.value)}>
-            <option value="in_person">{t("careRequestInPerson")}</option>
-            <option value="chat">{t("teleModeChat")}</option>
-            <option value="video">{t("teleModeVideo")}</option>
-            <option value="audio">{t("teleModeAudio")}</option>
-          </select>
-        </label>
-        {["chat", "audio", "video"].includes(careRequestMode) ? (
-          <div className="appointments-coming-soon-note">
-            <p className="micro">
-              {careRequestMode === "audio"
-                ? "Audio consult opens in a browser meeting room once the consult is scheduled."
-                : careRequestMode === "video"
-                  ? "Video consult opens in a browser meeting room once the consult is scheduled."
-                  : "Chat consult is live now. Audio and video consults open in browser meeting rooms once scheduled."}
-            </p>
+      <div className="appointments-layout">
+        <form className="form appointments-booking-card" onSubmit={submitCareRequest}>
+          <div className="appointments-card-head">
+            <div>
+              <p className="eyebrow">Book a visit</p>
+              <h3>Appointment details</h3>
+            </div>
+            <div className="appointments-mode-strip">
+              <span className="micro strong">Mode</span>
+              <span className="appointments-mode-pill">{careRequestMode === "in_person" ? "In-person visit" : `${careRequestMode} consult`}</span>
+            </div>
           </div>
-        ) : null}
-        {selectedDoctor ? (
-          <div className="history-card subtle">
-            <p className="micro strong">Consultation fee</p>
-            <p className="history-headline">Rs {selectedFee || 0}</p>
-            <p className="micro">
-              {selectedFee > 0 ? "This will be available for online payment right after booking." : "No online consultation fee is configured for this doctor yet."}
-            </p>
-          </div>
-        ) : null}
-        {careRequestMode === "in_person" ? (
-          <>
-            <label className="block">
-              {t("apptDepartment")}
-              <select
-                value={appointmentForm.departmentId}
-                onChange={(event) =>
-                  setAppointmentForm((prev) => ({ ...prev, departmentId: event.target.value, doctorId: "", slotTime: "" }))
-                }
-              >
-                <option value="">Select department</option>
-                {departments.map((department) => (
-                  <option key={department.id} value={department.id}>
-                    {department.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              Doctor
-              <select
-                value={appointmentForm.doctorId}
-                onChange={(event) =>
-                  setAppointmentForm((prev) => ({ ...prev, doctorId: event.target.value, slotTime: "" }))
-                }
-              >
-                <option value="">Select doctor</option>
-                {departmentDoctors.map((doctor) => (
-                  <option key={doctor.id} value={doctor.id}>
-                    {doctor.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              {t("apptReason")}
-              <textarea
-                rows={3}
-                value={appointmentForm.reason}
-                onChange={(event) => setAppointmentForm((prev) => ({ ...prev, reason: event.target.value }))}
-              />
-            </label>
-            <div className="form-row">
-              <label>
-                Appointment date
-                <input
-                  type="date"
-                  value={appointmentForm.appointmentDate}
-                  onChange={(event) =>
-                    setAppointmentForm((prev) => ({ ...prev, appointmentDate: event.target.value, slotTime: "" }))
-                  }
-                />
-              </label>
-              <label>
-                Slot
+          <label className="block">
+            {t("careRequestType")}
+            <select value={careRequestMode} onChange={(event) => setCareRequestMode(event.target.value)}>
+              <option value="in_person">{t("careRequestInPerson")}</option>
+              <option value="chat">{t("teleModeChat")}</option>
+              <option value="video">{t("teleModeVideo")}</option>
+              <option value="audio">{t("teleModeAudio")}</option>
+            </select>
+          </label>
+          {["chat", "audio", "video"].includes(careRequestMode) ? (
+            <div className="appointments-coming-soon-note">
+              <p className="micro">
+                {careRequestMode === "audio"
+                  ? "Audio consult opens in a browser meeting room once the consult is scheduled."
+                  : careRequestMode === "video"
+                    ? "Video consult opens in a browser meeting room once the consult is scheduled."
+                    : "Chat consult is live now. Audio and video consults open in browser meeting rooms once scheduled."}
+              </p>
+            </div>
+          ) : null}
+          {selectedDoctor ? (
+            <div className="history-card subtle appointments-fee-card">
+              <p className="micro strong">Consultation fee</p>
+              <p className="history-headline">Rs {selectedFee || 0}</p>
+              <p className="micro">
+                {selectedFee > 0 ? "This will be available for online payment right after booking." : "No online consultation fee is configured for this doctor yet."}
+              </p>
+            </div>
+          ) : null}
+          {careRequestMode === "in_person" ? (
+            <>
+              <label className="block">
+                {t("apptDepartment")}
                 <select
-                  value={appointmentForm.slotTime}
-                  onChange={(event) => setAppointmentForm((prev) => ({ ...prev, slotTime: event.target.value }))}
+                  value={appointmentForm.departmentId}
+                  onChange={(event) =>
+                    setAppointmentForm((prev) => ({ ...prev, departmentId: event.target.value, doctorId: "", slotTime: "" }))
+                  }
                 >
-                  <option value="">Select slot</option>
-                  {availableSlots.map((slot) => (
-                    <option key={slot.dateTime} value={slot.time}>
-                      {slot.time}
+                  <option value="">Select department</option>
+                  {departments.map((department) => (
+                    <option key={department.id} value={department.id}>
+                      {department.name}
                     </option>
                   ))}
                 </select>
               </label>
-            </div>
-            {slotStatus && <p className="micro">{slotStatus}</p>}
-            <button className="primary full" type="submit">
-              {t("apptBook")}
-            </button>
-          </>
-        ) : (
-          <>
-            <label className="block">
-              {t("apptDepartment")}
-              <select
-                value={appointmentForm.departmentId}
-                onChange={(event) =>
-                  setAppointmentForm((prev) => ({ ...prev, departmentId: event.target.value, doctorId: "", slotTime: "" }))
-                }
-              >
-                <option value="">Select department</option>
-                {departments.map((department) => (
-                  <option key={`remote-department-${department.id}`} value={department.id}>
-                    {department.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="block">
-              Doctor
-              <select
-                value={appointmentForm.doctorId}
-                onChange={(event) =>
-                  setAppointmentForm((prev) => ({ ...prev, doctorId: event.target.value, slotTime: "" }))
-                }
-              >
-                <option value="">Select doctor</option>
-                {departmentDoctors.map((doctor) => (
-                  <option key={`remote-doctor-${doctor.id}`} value={doctor.id}>
-                    {doctor.name}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <div className="form-row">
-              <label>
-                Appointment date
-                <input
-                  type="date"
-                  value={appointmentForm.appointmentDate}
-                  onChange={(event) =>
-                    setAppointmentForm((prev) => ({ ...prev, appointmentDate: event.target.value, slotTime: "" }))
-                  }
-                />
-              </label>
-              <label>
-                Slot
+              <label className="block">
+                Doctor
                 <select
-                  value={appointmentForm.slotTime}
-                  onChange={(event) => setAppointmentForm((prev) => ({ ...prev, slotTime: event.target.value }))}
+                  value={appointmentForm.doctorId}
+                  onChange={(event) =>
+                    setAppointmentForm((prev) => ({ ...prev, doctorId: event.target.value, slotTime: "" }))
+                  }
                 >
-                  <option value="">Select slot</option>
-                  {availableSlots.map((slot) => (
-                    <option key={`remote-slot-${slot.dateTime}`} value={slot.time}>
-                      {slot.time}
+                  <option value="">Select doctor</option>
+                  {departmentDoctors.map((doctor) => (
+                    <option key={doctor.id} value={doctor.id}>
+                      {doctor.name}
                     </option>
                   ))}
                 </select>
               </label>
+              <label className="block">
+                {t("apptReason")}
+                <textarea
+                  rows={3}
+                  value={appointmentForm.reason}
+                  onChange={(event) => setAppointmentForm((prev) => ({ ...prev, reason: event.target.value }))}
+                />
+              </label>
+              <div className="form-row">
+                <label>
+                  Appointment date
+                  <input
+                    type="date"
+                    value={appointmentForm.appointmentDate}
+                    onChange={(event) =>
+                      setAppointmentForm((prev) => ({ ...prev, appointmentDate: event.target.value, slotTime: "" }))
+                    }
+                  />
+                </label>
+                <label>
+                  Slot
+                  <select
+                    value={appointmentForm.slotTime}
+                    onChange={(event) => setAppointmentForm((prev) => ({ ...prev, slotTime: event.target.value }))}
+                  >
+                    <option value="">Select slot</option>
+                    {availableSlots.map((slot) => (
+                      <option key={slot.dateTime} value={slot.time}>
+                        {slot.time}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {slotStatus && <p className="micro">{slotStatus}</p>}
+              <button className="primary full" type="submit">
+                {t("apptBook")}
+              </button>
+            </>
+          ) : (
+            <>
+              <label className="block">
+                {t("apptDepartment")}
+                <select
+                  value={appointmentForm.departmentId}
+                  onChange={(event) =>
+                    setAppointmentForm((prev) => ({ ...prev, departmentId: event.target.value, doctorId: "", slotTime: "" }))
+                  }
+                >
+                  <option value="">Select department</option>
+                  {departments.map((department) => (
+                    <option key={`remote-department-${department.id}`} value={department.id}>
+                      {department.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block">
+                Doctor
+                <select
+                  value={appointmentForm.doctorId}
+                  onChange={(event) =>
+                    setAppointmentForm((prev) => ({ ...prev, doctorId: event.target.value, slotTime: "" }))
+                  }
+                >
+                  <option value="">Select doctor</option>
+                  {departmentDoctors.map((doctor) => (
+                    <option key={`remote-doctor-${doctor.id}`} value={doctor.id}>
+                      {doctor.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <div className="form-row">
+                <label>
+                  Appointment date
+                  <input
+                    type="date"
+                    value={appointmentForm.appointmentDate}
+                    onChange={(event) =>
+                      setAppointmentForm((prev) => ({ ...prev, appointmentDate: event.target.value, slotTime: "" }))
+                    }
+                  />
+                </label>
+                <label>
+                  Slot
+                  <select
+                    value={appointmentForm.slotTime}
+                    onChange={(event) => setAppointmentForm((prev) => ({ ...prev, slotTime: event.target.value }))}
+                  >
+                    <option value="">Select slot</option>
+                    {availableSlots.map((slot) => (
+                      <option key={`remote-slot-${slot.dateTime}`} value={slot.time}>
+                        {slot.time}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              {slotStatus && <p className="micro">{slotStatus}</p>}
+              <label className="block">
+                {t("telePhone")}
+                <input type="text" value={teleForm.phone} onChange={(event) => updateTeleField("phone", event.target.value)} />
+              </label>
+              <label className="block">
+                {t("teleConcern")}
+                <textarea rows={3} value={teleForm.concern} onChange={(event) => updateTeleField("concern", event.target.value)} />
+              </label>
+              <button className="primary full" type="submit">
+                {t("teleBook")}
+              </button>
+            </>
+          )}
+        </form>
+
+        <div className="appointments-feed-card">
+          <div className="appointments-card-head">
+            <div>
+              <p className="eyebrow">Your visits</p>
+              <h3>Activity</h3>
             </div>
-            {slotStatus && <p className="micro">{slotStatus}</p>}
-            <label className="block">
-              {t("telePhone")}
-              <input type="text" value={teleForm.phone} onChange={(event) => updateTeleField("phone", event.target.value)} />
-            </label>
-            <label className="block">
-              {t("teleConcern")}
-              <textarea rows={3} value={teleForm.concern} onChange={(event) => updateTeleField("concern", event.target.value)} />
-            </label>
-            <button className="primary full" type="submit">
-              {t("teleBook")}
+            <span className="appointments-history-count">{activeHistoryCount}</span>
+          </div>
+          <div className="member-list appointments-tab-strip">
+            <button
+              type="button"
+              className={appointmentsViewTab === "future" ? "chip active" : "chip"}
+              onClick={() => setAppointmentsViewTab("future")}
+            >
+              Future
             </button>
-          </>
-        )}
-      </form>
-      {(teleStatus || appointmentsStatus || consultPaymentStatus) && <p className="micro">{teleStatus || appointmentsStatus || consultPaymentStatus}</p>}
-      <div className="member-list appointments-tab-strip" style={{ marginTop: 16 }}>
-        <button
-          type="button"
-          className={appointmentsViewTab === "future" ? "chip active" : "chip"}
-          onClick={() => setAppointmentsViewTab("future")}
-        >
-          Future
-        </button>
-        <button
-          type="button"
-          className={appointmentsViewTab === "past" ? "chip active" : "chip"}
-          onClick={() => setAppointmentsViewTab("past")}
-        >
-          Past
-        </button>
-        <button
-          type="button"
-          className={appointmentsViewTab === "requested" ? "chip active" : "chip"}
-          onClick={() => setAppointmentsViewTab("requested")}
-        >
-          Requested
-        </button>
-      </div>
-      <div className="history-list appointments-history-list" style={{ marginTop: 16 }}>
+            <button
+              type="button"
+              className={appointmentsViewTab === "past" ? "chip active" : "chip"}
+              onClick={() => setAppointmentsViewTab("past")}
+            >
+              Past
+            </button>
+            <button
+              type="button"
+              className={appointmentsViewTab === "requested" ? "chip active" : "chip"}
+              onClick={() => setAppointmentsViewTab("requested")}
+            >
+              Requested
+            </button>
+          </div>
+          <div className="history-list appointments-history-list" style={{ marginTop: 16 }}>
+          {(teleStatus || appointmentsStatus || consultPaymentStatus) && <p className="micro patient-status-note">{teleStatus || appointmentsStatus || consultPaymentStatus}</p>}
         {appointmentsViewTab === "future" &&
           futureAppointments.slice(0, 8).map((appointment) => (
             <div key={`appt-mobile-future-${appointment.id}`} className="history-card appointments-history-card">
@@ -421,11 +437,13 @@ export function AppointmentsPanel({
               </div>
             </div>
           ))}
-        {appointmentsViewTab === "future" && futureAppointments.length === 0 && <p className="micro">No upcoming appointments.</p>}
-        {appointmentsViewTab === "past" && pastAppointments.length === 0 && <p className="micro">No past appointments yet.</p>}
+        {appointmentsViewTab === "future" && futureAppointments.length === 0 && renderEmptyState("No upcoming visits", "Once a visit is booked, it will appear here with timing and payment status.")}
+        {appointmentsViewTab === "past" && pastAppointments.length === 0 && renderEmptyState("No past visits yet", "Completed visits and consult history will build your timeline here.")}
         {appointmentsViewTab === "requested" && requestedCare.length === 0 && requestedAppointments.length === 0 && (
-          <p className="micro">No pending requests.</p>
+          renderEmptyState("No pending requests", "New appointment and consult requests will stay here until they are scheduled.")
         )}
+          </div>
+        </div>
       </div>
     </section>
   );

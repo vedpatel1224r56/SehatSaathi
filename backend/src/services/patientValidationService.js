@@ -28,18 +28,8 @@ const createPatientValidationService = ({ hospitalSettingsService }) => {
   const validatePatientProfileCompleteness = (payload = {}) => {
     const errors = {};
     const requiredFields = [
-      ["registrationMode", "Registration mode is required."],
       ["sex", "Sex is required."],
       ["phone", "Contact number is required."],
-      ["maritalStatus", "Marital status is required."],
-      ["dateOfBirth", "Date of birth is required."],
-      ["bloodGroup", "Blood group is required."],
-      ["addressLine1", "Address line 1 is required."],
-      ["city", "City is required."],
-      ["state", "State is required."],
-      ["pinCode", "PIN code is required."],
-      ["emergencyContactName", "Emergency contact name is required."],
-      ["emergencyContactPhone", "Emergency contact phone is required."],
     ];
     for (const [key, message] of requiredFields) {
       const value = payload[key];
@@ -55,10 +45,6 @@ const createPatientValidationService = ({ hospitalSettingsService }) => {
       errors.email = "Valid email is required.";
     }
 
-    const registrationMode = String(payload.registrationMode || "").trim().toLowerCase();
-    if (registrationMode && !["opd", "pid"].includes(registrationMode)) {
-      errors.registrationMode = "Registration mode must be OPD or PID.";
-    }
     const sex = String(payload.sex || "").trim().toLowerCase();
     if (sex && !PATIENT_ALLOWED_SEX.has(sex)) {
       errors.sex = "Invalid sex value.";
@@ -79,10 +65,6 @@ const createPatientValidationService = ({ hospitalSettingsService }) => {
       errors.phone = "Contact number must be 10 digits.";
     }
 
-    const normalizedEmergencyPhone = String(payload.emergencyContactPhone || "").replace(/\D/g, "");
-    if (normalizedEmergencyPhone && normalizedEmergencyPhone.length !== 10) {
-      errors.emergencyContactPhone = "Emergency contact phone must be 10 digits.";
-    }
     const normalizedAbhaNumber = String(payload.abhaNumber || "").replace(/\D/g, "");
     if (normalizedAbhaNumber && normalizedAbhaNumber.length !== 14) {
       errors.abhaNumber = "ABHA number must be 14 digits.";

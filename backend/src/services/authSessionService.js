@@ -141,7 +141,7 @@ const createAuthSessionService = ({
     const refreshToken = createRefreshToken();
     const refreshHash = hashToken(refreshToken);
     const expiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRES_DAYS * 24 * 60 * 60 * 1000).toISOString();
-    await run(
+    const insert = await run(
       `INSERT INTO auth_sessions
        (user_id, refresh_token_hash, expires_at, revoked_at, user_agent, ip, created_at, updated_at)
        VALUES (?, ?, ?, NULL, ?, ?, ?, ?)`,
@@ -155,7 +155,12 @@ const createAuthSessionService = ({
         nowIso(),
       ],
     );
-    return { accessToken, refreshToken, refreshExpiresAt: expiresAt };
+    return {
+      accessToken,
+      refreshToken,
+      refreshExpiresAt: expiresAt,
+      sessionId: insert.lastID,
+    };
   };
 
   const consumeIdempotencyKey = async ({ userId, routeKey, idempotencyKey, execute }) => {

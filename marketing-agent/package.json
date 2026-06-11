@@ -1,0 +1,14 @@
+{
+  "name": "sehatsaathiplus-marketing-agent",
+  "version": "1.0.0",
+  "description": "AI marketing agent for SehatsaathiPlus — bilingual (English + Gujarati) content generation for Vadodara pilot launch",
+  "main": "agent.js",
+  "type": "module",
+  "scripts": {
+    "start": "node agent.js",
+    "generate": "node agent.js"
+  },
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.52.0"
+  }
+}

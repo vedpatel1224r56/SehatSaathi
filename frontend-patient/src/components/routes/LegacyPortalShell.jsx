@@ -16,7 +16,9 @@ export function LegacyPortalShell(props) {
     <div className="app">
       <header className="nav">
         <div className="brand">
-          <div className="logo-mark">S</div>
+          <div className="logo-mark">
+            <img src="/sehatsaathi-logo.jpg" alt="SehatSaathi logo" />
+          </div>
           <div>
             <p className="brand-title">{t("brandTitle")}</p>
             <p className="brand-subtitle">{t("brandSubtitle")}</p>

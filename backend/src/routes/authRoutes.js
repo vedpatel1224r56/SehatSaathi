@@ -17,14 +17,46 @@ const registerAuthRoutes = (fastify, deps) => {
     hashToken,
     generateOtpCode,
     queuePasswordResetOtpDelivery,
+    ensureNotificationSettings,
+    updateNotificationSettings,
+    generateDueRemindersForUser,
   } = deps;
+
+  const recordConsentBundle = async ({ userId, consentBundle, relatedType, createdAt = nowIso() }) => {
+    const consentPolicyVersion = String(consentBundle?.policyVersion || "").trim();
+    const consentItems = Array.isArray(consentBundle?.items) ? consentBundle.items : [];
+    const acceptedConsentItems = consentItems
+      .map((item) => ({
+        consentType: String(item?.consentType || "").trim(),
+        accepted: Boolean(item?.accepted),
+      }))
+      .filter((item) => item.consentType && item.accepted && consentPolicyVersion);
+    for (const item of acceptedConsentItems) {
+      const existing = await get(
+        `SELECT id
+         FROM consent_logs
+         WHERE user_id = ? AND consent_type = ? AND policy_version = ? AND accepted = 1
+         ORDER BY id DESC
+         LIMIT 1`,
+        [userId, item.consentType, consentPolicyVersion],
+      );
+      if (existing?.id) continue;
+      await run(
+        `INSERT INTO consent_logs
+         (user_id, consent_type, related_type, related_id, policy_version, accepted, created_at)
+         VALUES (?, ?, ?, NULL, ?, 1, ?)`,
+        [userId, item.consentType, relatedType, consentPolicyVersion, createdAt],
+      );
+    }
+    return acceptedConsentItems.length;
+  };
 
   fastify.post("/api/auth/register", async (request, reply) => {
     const rl = checkRateLimit(`register:${request.ip}`, 8, 60 * 1000);
     if (!rl.allowed) {
       return reply.code(429).send({ error: `Too many requests. Retry in ${rl.retryAfterSec}s.` });
     }
-    const { name, email, password } = request.body || {};
+    const { name, email, password, consentBundle = null } = request.body || {};
     if (!name || !email || !password) {
       return reply.code(400).send({ error: "Name, email, and password required." });
     }
@@ -64,6 +96,12 @@ const registerAuthRoutes = (fastify, deps) => {
        VALUES (?, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?)`,
       [result.lastID, createdAt],
     );
+    const consentRecorded = await recordConsentBundle({
+      userId: result.lastID,
+      consentBundle,
+      relatedType: "signup",
+      createdAt,
+    });
     const user = { id: result.lastID, name: normalizedName, email: normalizedEmail, role: "patient" };
     const session = await issueSessionTokens(
       { ...user, token_version: 0 },
@@ -82,6 +120,8 @@ const registerAuthRoutes = (fastify, deps) => {
       token: session.accessToken,
       refreshToken: session.refreshToken,
       refreshExpiresAt: session.refreshExpiresAt,
+      sessionId: session.sessionId,
+      consentRecorded,
     };
   });
 
@@ -90,7 +130,7 @@ const registerAuthRoutes = (fastify, deps) => {
     if (!rl.allowed) {
       return reply.code(429).send({ error: `Too many requests. Retry in ${rl.retryAfterSec}s.` });
     }
-    const { email, password } = request.body || {};
+    const { email, password, consentBundle = null } = request.body || {};
     if (!email || !password) {
       return reply.code(400).send({ error: "Email and password required." });
     }
@@ -127,6 +167,11 @@ const registerAuthRoutes = (fastify, deps) => {
       userAgent: request.headers["user-agent"] || "",
       ip: request.ip || "",
     });
+    const consentRecorded = await recordConsentBundle({
+      userId: cleanUser.id,
+      consentBundle,
+      relatedType: "login",
+    });
     return {
       user: {
         id: cleanUser.id,
@@ -140,6 +185,8 @@ const registerAuthRoutes = (fastify, deps) => {
       token: session.accessToken,
       refreshToken: session.refreshToken,
       refreshExpiresAt: session.refreshExpiresAt,
+      sessionId: session.sessionId,
+      consentRecorded,
     };
   });
 
@@ -215,6 +262,7 @@ const registerAuthRoutes = (fastify, deps) => {
       token: next.accessToken,
       refreshToken: next.refreshToken,
       refreshExpiresAt: next.refreshExpiresAt,
+      sessionId: next.sessionId,
     };
   });
 
@@ -241,8 +289,51 @@ const registerAuthRoutes = (fastify, deps) => {
     return { ok: true };
   });
 
+  fastify.get("/api/auth/sessions", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const sessions = await all(
+      `SELECT id, user_agent, ip, created_at, updated_at, expires_at, revoked_at
+       FROM auth_sessions
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC, id DESC`,
+      [request.authUser.id],
+    );
+    const currentSessionId = Number(request.headers["x-session-id"] || 0) || null;
+    return {
+      sessions: sessions.map((session) => ({
+        id: session.id,
+        userAgent: session.user_agent || "",
+        ip: session.ip || "",
+        createdAt: session.created_at,
+        updatedAt: session.updated_at,
+        expiresAt: session.expires_at,
+        revokedAt: session.revoked_at,
+        isCurrent: currentSessionId ? Number(session.id) === currentSessionId : false,
+      })),
+    };
+  });
+
+  fastify.delete("/api/auth/sessions/:sessionId", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const sessionId = Number(request.params?.sessionId || 0);
+    if (!sessionId) {
+      return reply.code(400).send({ error: "Valid sessionId required." });
+    }
+    const session = await get("SELECT id, user_id FROM auth_sessions WHERE id = ?", [sessionId]);
+    if (!session || Number(session.user_id) !== Number(request.authUser.id)) {
+      return reply.code(404).send({ error: "Session not found." });
+    }
+    await run("UPDATE auth_sessions SET revoked_at = ?, updated_at = ? WHERE id = ? AND revoked_at IS NULL", [
+      nowIso(),
+      nowIso(),
+      sessionId,
+    ]);
+    return { ok: true, sessionId };
+  });
+
   fastify.get("/api/notifications", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
+    await generateDueRemindersForUser(request.authUser.id);
     const limit = Math.max(1, Math.min(Number(request.query?.limit) || 20, 50));
     const notifications = await all(
       `SELECT id, type, title, message, related_id, is_read, created_at
@@ -257,6 +348,20 @@ const registerAuthRoutes = (fastify, deps) => {
         ...item,
         is_read: Number(item.is_read) === 1,
       })),
+    };
+  });
+
+  fastify.get("/api/notification-settings", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    return {
+      settings: await ensureNotificationSettings(request.authUser.id),
+    };
+  });
+
+  fastify.put("/api/notification-settings", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    return {
+      settings: await updateNotificationSettings(request.authUser.id, request.body || {}),
     };
   });
 
@@ -370,6 +475,99 @@ const registerAuthRoutes = (fastify, deps) => {
     );
     await run("UPDATE password_reset_otps SET used_at = ? WHERE id = ?", [nowIso(), resetRow.id]);
     return { ok: true, message: "Password updated successfully." };
+  });
+
+  // ── Phone OTP Login ──────────────────────────────────────────────────────
+  // POST /api/auth/phone-otp-send
+  fastify.post("/api/auth/phone-otp-send", async (req, reply) => {
+    const rawPhone = String(req.body?.phone || "").trim();
+    if (!rawPhone) return reply.code(400).send({ error: "phone required" });
+
+    // Normalize: strip spaces/dashes, ensure starts with country code
+    const phone = rawPhone.replace(/[\s\-()]/g, "");
+    if (!/^\+?[0-9]{7,15}$/.test(phone)) {
+      return reply.code(400).send({ error: "invalid phone number" });
+    }
+
+    // Rate-limit by phone (reuse OTP_RATE_LIMIT_PER_MIN)
+    const rl = checkRateLimit(`phone_otp:${phone}`, OTP_RATE_LIMIT_PER_MIN, 60 * 1000);
+    if (!rl.allowed) return reply.code(429).send({ error: "Too many requests. Please wait a minute." });
+
+    const code = generateOtpCode();
+    const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+    const expiresAt = new Date(Date.now() + OTP_EXPIRES_MINUTES * 60 * 1000).toISOString();
+
+    // Expire old OTPs for this phone
+    await run("DELETE FROM phone_login_otps WHERE phone = ? OR expires_at <= ?", [phone, nowIso()]);
+
+    // Store new OTP
+    await run(
+      `INSERT INTO phone_login_otps (phone, otp_hash, expires_at, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [phone, codeHash, expiresAt, nowIso()],
+    );
+
+    // In production, send via SMS gateway. For now, log to console (dev mode).
+    console.log(`[DEV] Phone OTP for ${phone}: ${code}`);
+
+    return reply.send({ ok: true, message: "OTP sent", dev_otp: process.env.NODE_ENV !== "production" ? code : undefined });
+  });
+
+  // POST /api/auth/phone-otp-verify
+  fastify.post("/api/auth/phone-otp-verify", async (req, reply) => {
+    const rawPhone = String(req.body?.phone || "").trim();
+    const code = String(req.body?.code || "").trim();
+    if (!rawPhone || !code) return reply.code(400).send({ error: "phone and code required" });
+
+    const phone = rawPhone.replace(/[\s\-()]/g, "");
+    const codeHash = crypto.createHash("sha256").update(code).digest("hex");
+
+    // Find the most recent unused OTP for this phone
+    const otpRow = await get(
+      `SELECT * FROM phone_login_otps
+       WHERE phone = ? AND otp_hash = ?
+         AND used_at IS NULL AND expires_at > ?
+       ORDER BY created_at DESC LIMIT 1`,
+      [phone, codeHash, nowIso()],
+    );
+
+    if (!otpRow) return reply.code(400).send({ error: "Invalid or expired OTP." });
+
+    // Mark used
+    await run("UPDATE phone_login_otps SET used_at = ? WHERE id = ?", [nowIso(), otpRow.id]);
+
+    // Find or create user by phone
+    let user = await get("SELECT * FROM users WHERE phone = ?", [phone]);
+    if (!user) {
+      // Auto-create a minimal account — name derived from phone, no password
+      const displayName = `User ${phone.slice(-4)}`;
+      // Use phone as a unique placeholder email; password_hash is a locked sentinel
+      const placeholderEmail = `phone_${phone.replace(/\W/g, "")}@ssp.local`;
+      const lockedHash = "$phone_otp_only$"; // not a valid bcrypt hash — prevents password login
+      await run(
+        `INSERT INTO users (name, email, password_hash, phone, role, registration_mode, created_at)
+         VALUES (?, ?, ?, ?, 'patient', 'phone_otp', ?)`,
+        [displayName, placeholderEmail, lockedHash, phone, nowIso()],
+      );
+      user = await get("SELECT * FROM users WHERE phone = ?", [phone]);
+      // Backfill patient_uid now that we have user.id
+      if (user) {
+        const uid = buildPatientUid(user.id);
+        await run("UPDATE users SET patient_uid = ? WHERE id = ?", [uid, user.id]);
+        user.patient_uid = uid;
+      }
+    }
+
+    const session = await issueSessionTokens(user, { ip: req.ip, userAgent: req.headers["user-agent"] || "" });
+    return reply.send({
+      ok: true,
+      user: { id: user.id, name: user.name, email: user.email, role: user.role },
+      token: session.accessToken,
+      refreshToken: session.refreshToken,
+      refreshExpiresAt: session.refreshExpiresAt,
+      sessionId: session.sessionId,
+      isNewUser: !user.name || user.name.startsWith("User "),
+    });
   });
 };
 

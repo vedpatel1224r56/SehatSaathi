@@ -1,4 +1,19 @@
-const { listReportCatalog, buildReportInsights, parseReportText, parseReportSections } = require("../services/reportInsightsService");
+const {
+  listReportCatalog,
+  buildReportInsights,
+  parseReportText,
+  parseReportSections,
+  deriveInterpretationBand,
+} = require("../services/reportInsightsService");
+const { buildActionMap } = require("../services/actionMapService");
+const {
+  localizeReportInsights,
+  localizeActionMap,
+  normalizeLanguage,
+} = require("../services/reportInsightsLocalizationService");
+const { buildHealthContinuityAgent, formatDoctorHandoffText } = require("../services/healthContinuityAgentService");
+const { buildAiSafetyReview } = require("../services/healthAiSafetyService");
+const { buildPipelineFromAgent } = require("../services/healthContinuityPipelineService");
 const { extractDocumentFromFile, getExtractionCapabilities } = require("../services/reportExtractionService");
 
 const registerPatientRoutes = (fastify, deps) => {
@@ -26,14 +41,37 @@ const registerPatientRoutes = (fastify, deps) => {
     metricDate,
     createPublicId,
     enqueueAndDeliverUserNotification,
+    abdmService,
+    supportEmail = "support@sehatsaathi.health",
+    supportPhone = "",
+    supportWhatsapp = "",
   } = deps;
   const reportCatalog = listReportCatalog();
   const reportTypeKeys = new Set(reportCatalog.map((item) => item.key));
   const reportCatalogMap = new Map(reportCatalog.map((item) => [item.key, item]));
   const ABHA_ADDRESS_PATTERN = /^[a-z0-9][a-z0-9._-]{1,98}@[a-z][a-z0-9._-]{1,48}$/i;
+  const POLICY_VERSION = "2026-04-11";
+  const REPORT_UPLOAD_EXTENSIONS = new Set([".pdf", ".jpg", ".jpeg", ".png", ".webp", ".heic", ".heif"]);
 
   const normalizeAbhaNumber = (value = "") => String(value || "").replace(/\D/g, "");
   const normalizeAbhaAddress = (value = "") => String(value || "").trim().toLowerCase();
+  const inferReportMimeType = (filename = "", mimetype = "") => {
+    const type = String(mimetype || "").trim().toLowerCase();
+    if (type && type !== "application/octet-stream") return type;
+    const ext = path.extname(String(filename || "")).toLowerCase();
+    if (ext === ".pdf") return "application/pdf";
+    if (ext === ".heic") return "image/heic";
+    if (ext === ".heif") return "image/heif";
+    if (ext === ".jpg" || ext === ".jpeg") return "image/jpeg";
+    if (ext === ".png") return "image/png";
+    if (ext === ".webp") return "image/webp";
+    return type || "";
+  };
+  const isSupportedReportUploadPart = (part = {}) => {
+    const mimetype = String(part.mimetype || "").trim().toLowerCase();
+    const ext = path.extname(String(part.filename || "")).toLowerCase();
+    return mimetype === "application/pdf" || mimetype.startsWith("image/") || REPORT_UPLOAD_EXTENSIONS.has(ext);
+  };
   const validateAbhaIdentity = ({ abhaNumber = "", abhaAddress = "" }) => {
     const normalizedNumber = normalizeAbhaNumber(abhaNumber);
     const normalizedAddress = normalizeAbhaAddress(abhaAddress);
@@ -47,6 +85,207 @@ const registerPatientRoutes = (fastify, deps) => {
       ok: true,
       normalizedNumber,
       normalizedAddress,
+    };
+  };
+  const mergeFetchedAbhaProfile = (profile = {}, fetched = {}) => ({
+    ...profile,
+    name: fetched.fullName || profile.name || "",
+    phone: fetched.phone || profile.phone || "",
+    date_of_birth: fetched.dateOfBirth || profile.date_of_birth || "",
+    sex: fetched.sex || profile.sex || "",
+    blood_group: fetched.bloodGroup || profile.blood_group || "",
+    address_line_1: fetched.addressLine1 || profile.address_line_1 || "",
+    city: fetched.city || profile.city || "",
+    state: fetched.state || profile.state || "",
+    pin_code: fetched.pinCode || profile.pin_code || "",
+  });
+
+  const buildScopeKey = (memberId = null) => (memberId ? `member:${Number(memberId)}` : "self");
+  const buildStoredMetric = ({ item = {}, catalogMetric, metricKey }) => {
+    const valueNum = Number(item.valueNum);
+    if (!catalogMetric || !Number.isFinite(valueNum)) return null;
+    const normalizedUnit = String(item.unit || catalogMetric.unit || "").trim();
+    const normalizedReferenceLow = item.referenceLow ?? catalogMetric.low ?? null;
+    const normalizedReferenceHigh = item.referenceHigh ?? catalogMetric.high ?? null;
+    return {
+      metricKey,
+      metricLabel: catalogMetric.label,
+      valueNum,
+      unit: normalizedUnit,
+      referenceLow: normalizedReferenceLow,
+      referenceHigh: normalizedReferenceHigh,
+      originalMetricLabel: String(item.originalMetricLabel || item.metricLabel || catalogMetric.label || "").trim(),
+      originalUnit: String(item.originalUnit || normalizedUnit).trim(),
+      originalReferenceLow: item.originalReferenceLow ?? null,
+      originalReferenceHigh: item.originalReferenceHigh ?? null,
+      originalReferenceText: String(item.originalReferenceText || "").trim(),
+      originalValueText: String(item.originalValueText || item.valueNum || "").trim(),
+      normalizedValueText: String(item.normalizedValueText || item.valueNum || "").trim(),
+      interpretationBand:
+        String(item.interpretationBand || "").trim() ||
+        deriveInterpretationBand(valueNum, normalizedReferenceLow, normalizedReferenceHigh),
+      confidence: item.confidence ?? 1,
+    };
+  };
+
+  const normalizePlanPayload = (body = {}) => ({
+    focusKey: String(body.focusKey || "").trim().toLowerCase(),
+    title: String(body.title || "").trim(),
+    subtitle: String(body.subtitle || "").trim(),
+    goal: String(body.goal || "").trim(),
+    focusTitle: String(body.focusTitle || "").trim(),
+    focusSummary: String(body.focusSummary || "").trim(),
+    progress: body.progress && typeof body.progress === "object" && !Array.isArray(body.progress) ? body.progress : {},
+  });
+  const normalizeDoctorPlanTasks = (tasks = []) =>
+    (Array.isArray(tasks) ? tasks : [])
+      .map((task, index) => {
+        const label = String(task?.label || "").trim();
+        const note = String(task?.note || "").trim();
+        const id = String(task?.id || `doctor_task_${index + 1}`).trim();
+        if (!label) return null;
+        return {
+          id,
+          label,
+          note,
+          origin: task?.origin === "doctor" ? "doctor" : "ai",
+          editedByDoctor: Boolean(task?.editedByDoctor),
+        };
+      })
+      .filter(Boolean)
+      .slice(0, 6);
+
+  const upsertPatientHealthPlan = async ({
+    userId,
+    memberId = null,
+    focusKey,
+    title,
+    subtitle = "",
+    goal = "",
+    focusTitle = "",
+    focusSummary = "",
+    progress = {},
+  }) => {
+    const scopeKey = buildScopeKey(memberId);
+    const now = nowIso();
+    const existing = await get(
+      `SELECT id
+       FROM patient_health_plans
+       WHERE user_id = ?
+         AND scope_key = ?
+         AND focus_key = ?`,
+      [userId, scopeKey, focusKey],
+    );
+    if (existing?.id) {
+      await run(
+        `UPDATE patient_health_plans
+         SET title = ?, subtitle = ?, goal = ?, focus_title = ?, focus_summary = ?, progress_json = ?, updated_at = ?
+         WHERE id = ?`,
+        [
+          title,
+          subtitle || "",
+          goal || "",
+          focusTitle || "",
+          focusSummary || "",
+          JSON.stringify(progress || {}),
+          now,
+          existing.id,
+        ],
+      );
+      return { id: existing.id, created: false };
+    }
+
+    const insert = await run(
+      `INSERT INTO patient_health_plans
+       (user_id, member_id, scope_key, focus_key, title, subtitle, goal, focus_title, focus_summary, progress_json, plan_source, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'ai', ?, ?)`,
+      [
+        userId,
+        memberId || null,
+        scopeKey,
+        focusKey,
+        title,
+        subtitle || "",
+        goal || "",
+        focusTitle || "",
+        focusSummary || "",
+        JSON.stringify(progress || {}),
+        now,
+        now,
+      ],
+    );
+    return { id: insert.lastID, created: true };
+  };
+
+  const loadPatientHealthPlan = async ({ userId, memberId = null, focusKey }) => {
+    const scopeKey = buildScopeKey(memberId);
+    let plan = await get(
+      `SELECT id, focus_key, title, subtitle, goal, focus_title, focus_summary, progress_json,
+              plan_source, doctor_notes, doctor_updated_at, doctor_user_id, doctor_override_json,
+              created_at, updated_at
+       FROM patient_health_plans
+       WHERE user_id = ?
+         AND scope_key = ?
+         AND focus_key = ?`,
+      [userId, scopeKey, focusKey],
+    );
+    if (!plan) {
+      // If the requested focus has not been saved yet, fall back to the most
+      // recently updated plan for this patient scope so the UI keeps showing
+      // the last real momentum instead of resetting to an empty state.
+      plan = await get(
+        `SELECT id, focus_key, title, subtitle, goal, focus_title, focus_summary, progress_json,
+                plan_source, doctor_notes, doctor_updated_at, doctor_user_id, doctor_override_json,
+                created_at, updated_at
+         FROM patient_health_plans
+         WHERE user_id = ?
+           AND scope_key = ?
+         ORDER BY updated_at DESC, id DESC
+         LIMIT 1`,
+        [userId, scopeKey],
+      );
+    }
+    if (!plan) {
+      return { plan: null, activity: [] };
+    }
+    const activity = await all(
+      `SELECT a.id, a.tracker_key, a.label, a.value_text, a.unit, a.logged_at, a.created_at
+       FROM patient_health_plan_activity a
+       JOIN patient_health_plans p ON p.id = a.plan_id
+       WHERE a.user_id = ?
+         AND COALESCE(a.member_id, 0) = ?
+         AND p.scope_key = ?
+       ORDER BY datetime(a.logged_at) DESC, a.id DESC
+       LIMIT 20`,
+      [userId, memberId ? Number(memberId) : 0, scopeKey],
+    );
+    return {
+      plan: {
+        id: plan.id,
+        focusKey: plan.focus_key,
+        title: plan.title,
+        subtitle: plan.subtitle || "",
+        goal: plan.goal || "",
+        focusTitle: plan.focus_title || "",
+        focusSummary: plan.focus_summary || "",
+        progress: plan.progress_json ? safeJsonParse(plan.progress_json, {}) : {},
+        planSource: plan.plan_source || "ai",
+        doctorNotes: plan.doctor_notes || "",
+        doctorUpdatedAt: plan.doctor_updated_at || null,
+        doctorUserId: plan.doctor_user_id || null,
+        doctorOverride: plan.doctor_override_json ? safeJsonParse(plan.doctor_override_json, {}) : {},
+        createdAt: plan.created_at,
+        updatedAt: plan.updated_at,
+      },
+      activity: activity.map((entry) => ({
+        id: entry.id,
+        trackerKey: entry.tracker_key,
+        label: entry.label,
+        value: entry.value_text,
+        unit: entry.unit || "",
+        loggedAt: entry.logged_at,
+        createdAt: entry.created_at,
+      })),
     };
   };
 
@@ -96,7 +335,9 @@ const registerPatientRoutes = (fastify, deps) => {
     const sectionAnalysisIds = sectionAnalyses.map((item) => item.id);
     const metrics = analysisIds.length
       ? await all(
-          `SELECT id, analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at
+          `SELECT id, analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at,
+                  original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+                  original_value_text, normalized_value_text
            FROM medical_record_metrics
            WHERE analysis_id IN (${analysisIds.map(() => "?").join(",")})
            ORDER BY created_at ASC, id ASC`,
@@ -105,7 +346,9 @@ const registerPatientRoutes = (fastify, deps) => {
       : [];
     const sectionMetrics = sectionAnalysisIds.length
       ? await all(
-          `SELECT id, section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at
+          `SELECT id, section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at,
+                  original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+                  original_value_text, normalized_value_text
            FROM medical_record_section_metrics
            WHERE section_analysis_id IN (${sectionAnalysisIds.map(() => "?").join(",")})
            ORDER BY created_at ASC, id ASC`,
@@ -134,6 +377,14 @@ const registerPatientRoutes = (fastify, deps) => {
             referenceLow: item.reference_low,
             referenceHigh: item.reference_high,
             confidence: item.confidence,
+            originalMetricLabel: item.original_metric_label || item.metric_label,
+            originalUnit: item.original_unit || item.unit || "",
+            originalReferenceLow: item.original_reference_low,
+            originalReferenceHigh: item.original_reference_high,
+            originalReferenceText: item.original_reference_text || "",
+            originalValueText: item.original_value_text || String(item.value_num ?? ""),
+            normalizedValueText: item.normalized_value_text || String(item.value_num ?? ""),
+            interpretationBand: item.interpretation_band || deriveInterpretationBand(item.value_num, item.reference_low, item.reference_high),
           })),
       })),
       ...sectionAnalyses.map((analysis) => ({
@@ -159,6 +410,14 @@ const registerPatientRoutes = (fastify, deps) => {
             referenceLow: item.reference_low,
             referenceHigh: item.reference_high,
             confidence: item.confidence,
+            originalMetricLabel: item.original_metric_label || item.metric_label,
+            originalUnit: item.original_unit || item.unit || "",
+            originalReferenceLow: item.original_reference_low,
+            originalReferenceHigh: item.original_reference_high,
+            originalReferenceText: item.original_reference_text || "",
+            originalValueText: item.original_value_text || String(item.value_num ?? ""),
+            normalizedValueText: item.normalized_value_text || String(item.value_num ?? ""),
+            interpretationBand: item.interpretation_band || deriveInterpretationBand(item.value_num, item.reference_low, item.reference_high),
           })),
       })),
     ];
@@ -175,6 +434,7 @@ const registerPatientRoutes = (fastify, deps) => {
           p.sex,
           p.conditions,
           p.allergies,
+          p.medications,
           p.region,
           p.phone,
           p.address,
@@ -218,16 +478,56 @@ const registerPatientRoutes = (fastify, deps) => {
       ...profile,
       conditions: profile.conditions ? safeJsonParse(profile.conditions, []) : [],
       allergies: profile.allergies ? safeJsonParse(profile.allergies, []) : [],
+      medications: profile.medications ? safeJsonParse(profile.medications, []) : [],
     };
   };
 
-  const loadReportInsightPayload = async ({ userId, memberId = null, months = 6 }) => {
+  const resolveAgeYears = ({ age = null, dateOfBirth = "" } = {}) => {
+    const numericAge = Number(age);
+    if (Number.isFinite(numericAge) && numericAge > 0) return Math.round(numericAge);
+    const dob = String(dateOfBirth || "").trim();
+    if (!dob) return null;
+    const birthDate = new Date(dob);
+    if (Number.isNaN(birthDate.getTime())) return null;
+    const now = new Date();
+    let years = now.getFullYear() - birthDate.getFullYear();
+    const monthDiff = now.getMonth() - birthDate.getMonth();
+    if (monthDiff < 0 || (monthDiff === 0 && now.getDate() < birthDate.getDate())) years -= 1;
+    return years >= 0 ? years : null;
+  };
+
+  const buildPatientContextForInsights = async ({ userId, memberId = null }) => {
+    if (memberId) {
+      const member = await getFamilyMember(userId, memberId);
+      if (!member) return {};
+      return {
+        ageYears: resolveAgeYears({ age: member.age }),
+        sex: member.sex || "",
+        chronicConditions: member.conditions ? safeJsonParse(member.conditions, []) : [],
+        allergies: member.allergies ? safeJsonParse(member.allergies, []) : [],
+        medications: [],
+      };
+    }
+    const profile = await readPatientProfileByUserId(userId);
+    if (!profile) return {};
+    return {
+      ageYears: resolveAgeYears({ age: profile.age, dateOfBirth: profile.date_of_birth }),
+      sex: profile.sex || "",
+      chronicConditions: Array.isArray(profile.conditions) ? profile.conditions : [],
+      allergies: Array.isArray(profile.allergies) ? profile.allergies : [],
+      medications: Array.isArray(profile.medications) ? profile.medications : [],
+    };
+  };
+
+  const loadReportInsightPayload = async ({ userId, memberId = null, months = 6, lang = "en" }) => {
     const records = await all(
-      `SELECT id, file_name, mimetype, created_at
-       FROM medical_records
+      `SELECT mr.id, mr.file_name, mr.original_file_name, mr.display_label, mr.mimetype, mr.source, mr.source_label, mr.created_at,
+              uploader.name AS uploaded_by_name, uploader.email AS uploaded_by_email
+       FROM medical_records mr
+       LEFT JOIN users uploader ON uploader.id = mr.uploaded_by_user_id
        WHERE user_id = ?
          AND COALESCE(member_id, 0) = COALESCE(?, 0)
-       ORDER BY created_at DESC`,
+       ORDER BY mr.created_at DESC`,
       [userId, memberId || 0],
     );
     const extractions = await all(
@@ -241,14 +541,63 @@ const registerPatientRoutes = (fastify, deps) => {
       [userId, memberId || 0],
     );
     const analysisRows = await loadCombinedAnalyses({ userId, memberId });
-    const insightPayload = buildReportInsights({ analyses: analysisRows, months });
-    return {
-      catalog: reportCatalog,
-      extractionCapabilities: getExtractionCapabilities(),
+    const synthesizedAnalyses = extractions
+      .filter((item) => Array.isArray(safeJsonParse(item.suggested_metrics_json, [])) && safeJsonParse(item.suggested_metrics_json, []).length > 0)
+      .map((item) => {
+        const metrics = safeJsonParse(item.suggested_metrics_json, []);
+        const sections = safeJsonParse(item.detected_sections_json, []);
+        const primarySection = sections[0] || null;
+        return {
+          id: `extraction-${item.record_id}`,
+          recordId: item.record_id,
+          reportType: String(item.suggested_report_type || primarySection?.reportType || "").trim(),
+          reportDate: String(item.suggested_report_date || "").trim() || (item.updated_at ? String(item.updated_at).slice(0, 10) : ""),
+          notes: "",
+          source: "auto_extracted_preview",
+          createdAt: item.updated_at,
+          updatedAt: item.updated_at,
+          metrics: metrics.map((metric) => ({
+            ...metric,
+            metricKey: metric.metricKey || metric.key || "",
+            metricLabel: metric.metricLabel || metric.label || metric.metricKey || metric.key || "",
+            valueNum: metric.valueNum,
+            unit: metric.unit || "",
+            referenceLow: metric.referenceLow ?? metric.low ?? null,
+            referenceHigh: metric.referenceHigh ?? metric.high ?? null,
+            confidence: metric.confidence ?? item.overall_confidence ?? null,
+            originalMetricLabel: metric.originalMetricLabel || metric.metricLabel || metric.label || metric.metricKey || "",
+            originalUnit: metric.originalUnit || metric.unit || "",
+            originalReferenceLow: metric.originalReferenceLow ?? metric.referenceLow ?? metric.low ?? null,
+            originalReferenceHigh: metric.originalReferenceHigh ?? metric.referenceHigh ?? metric.high ?? null,
+            originalReferenceText: metric.originalReferenceText || "",
+            originalValueText: metric.originalValueText || String(metric.valueNum ?? ""),
+            normalizedValueText: metric.normalizedValueText || String(metric.valueNum ?? ""),
+            interpretationBand:
+              metric.interpretationBand ||
+              deriveInterpretationBand(metric.valueNum, metric.referenceLow ?? metric.low ?? null, metric.referenceHigh ?? metric.high ?? null),
+          })),
+        };
+      });
+    const analysisSourceRows = analysisRows.length ? analysisRows : synthesizedAnalyses;
+    const patientContext = await buildPatientContextForInsights({ userId, memberId });
+      const sourceInsightPayload = buildReportInsights({ analyses: analysisSourceRows, months, patientContext });
+      const language = normalizeLanguage(lang);
+      const insightPayload = localizeReportInsights(sourceInsightPayload, language);
+      const aiSafetyReview = buildAiSafetyReview({ insights: sourceInsightPayload });
+      return {
+        catalog: reportCatalog,
+        extractionCapabilities: getExtractionCapabilities(),
       records: records.map((record) => ({
         ...record,
-        analysis: analysisRows.find((item) => item.recordId === record.id) || null,
-        analyses: analysisRows.filter((item) => item.recordId === record.id),
+        label: record.display_label || record.original_file_name || record.file_name,
+        original_name: record.original_file_name || "",
+        uploaded_by_name: record.uploaded_by_name || "",
+        uploaded_by_email: record.uploaded_by_email || "",
+        analysis: analysisRows.find((item) => item.recordId === record.id) || synthesizedAnalyses.find((item) => item.recordId === record.id) || null,
+        analyses: [
+          ...analysisRows.filter((item) => item.recordId === record.id),
+          ...synthesizedAnalyses.filter((item) => item.recordId === record.id),
+        ],
         extraction: (() => {
           const extraction = extractions.find((item) => item.record_id === record.id) || null;
           if (!extraction) return null;
@@ -262,8 +611,72 @@ const registerPatientRoutes = (fastify, deps) => {
           };
         })(),
         downloadUrl: `/api/records/${record.id}/download`,
-      })),
-      insights: insightPayload,
+        })),
+        insights: {
+          ...insightPayload,
+          aiSafetyReview,
+          actionMap: localizeActionMap(
+            buildActionMap(sourceInsightPayload.trends || [], language, sourceInsightPayload.patientContext || patientContext),
+            language,
+          ),
+        },
+    };
+  };
+
+  const loadContinuityAgentPayload = async ({ userId, memberId = null, months = 12, lang = "en" }) => {
+    const payload = await loadReportInsightPayload({ userId, memberId, months, lang });
+    const activity = await all(
+      `SELECT a.id, a.tracker_key, a.label, a.value_text, a.unit, a.logged_at, a.created_at, p.focus_key
+       FROM patient_health_plan_activity a
+       LEFT JOIN patient_health_plans p ON p.id = a.plan_id
+       WHERE a.user_id = ?
+         AND COALESCE(a.member_id, 0) = COALESCE(?, 0)
+       ORDER BY a.logged_at DESC, a.id DESC
+       LIMIT 40`,
+      [userId, memberId || 0],
+    );
+    const appointments = await all(
+      `SELECT id, department, scheduled_at, status, created_at
+       FROM appointments
+       WHERE user_id = ?
+         AND COALESCE(member_id, 0) = COALESCE(?, 0)
+       ORDER BY scheduled_at DESC
+       LIMIT 8`,
+      [userId, memberId || 0],
+    ).catch(() => []);
+    const profile = memberId ? await getFamilyMember(userId, memberId) : await readPatientProfileByUserId(userId);
+    const aiSafetyReview = buildAiSafetyReview({ insights: payload.insights || {} });
+    const agent = buildHealthContinuityAgent({
+      records: payload.records || [],
+      insights: payload.insights || {},
+      activity,
+      appointments,
+      profile: profile || {},
+      aiSafetyReview,
+    });
+    const pipeline = buildPipelineFromAgent({
+      insightPayload: payload,
+      agent,
+      aiSafetyReview,
+    });
+    return {
+      ...payload,
+      activity,
+      appointments,
+      profile,
+      agent: {
+        ...agent,
+        aiSafetyReview,
+        pipeline,
+        followUpTestConsiderations: pipeline.stages.followUpTestConsiderations.items,
+        capabilities: {
+          ...agent.capabilities,
+          safetyEscalation: {
+            status: aiSafetyReview.status,
+            evidence: aiSafetyReview.patientLine,
+          },
+        },
+      },
     };
   };
 
@@ -278,17 +691,7 @@ const registerPatientRoutes = (fastify, deps) => {
       .map((item) => {
         const metricKey = String(item.metricKey || "").trim();
         const catalogMetric = allowedMetrics.get(metricKey);
-        const valueNum = Number(item.valueNum);
-        if (!catalogMetric || !Number.isFinite(valueNum)) return null;
-        return {
-          metricKey,
-          metricLabel: catalogMetric.label,
-          valueNum,
-          unit: catalogMetric.unit || "",
-          referenceLow: catalogMetric.low ?? null,
-          referenceHigh: catalogMetric.high ?? null,
-          confidence: 1,
-        };
+        return buildStoredMetric({ item, catalogMetric, metricKey });
       })
       .filter(Boolean);
 
@@ -320,8 +723,10 @@ const registerPatientRoutes = (fastify, deps) => {
     for (const metric of normalizedMetrics) {
       await run(
         `INSERT INTO medical_record_metrics
-         (analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         (analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at,
+          original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+          original_value_text, normalized_value_text)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           analysisId,
           metric.metricKey,
@@ -332,6 +737,14 @@ const registerPatientRoutes = (fastify, deps) => {
           metric.referenceHigh,
           metric.confidence ?? 1,
           now,
+          metric.originalMetricLabel,
+          metric.originalUnit,
+          metric.originalReferenceLow,
+          metric.originalReferenceHigh,
+          metric.originalReferenceText,
+          metric.interpretationBand,
+          metric.originalValueText,
+          metric.normalizedValueText,
         ],
       );
     }
@@ -356,17 +769,7 @@ const registerPatientRoutes = (fastify, deps) => {
         .map((item) => {
           const metricKey = String(item.metricKey || "").trim();
           const catalogMetric = allowedMetrics.get(metricKey);
-          const valueNum = Number(item.valueNum);
-          if (!catalogMetric || !Number.isFinite(valueNum)) return null;
-          return {
-            metricKey,
-            metricLabel: catalogMetric.label,
-            valueNum,
-            unit: catalogMetric.unit || "",
-            referenceLow: catalogMetric.low ?? null,
-            referenceHigh: catalogMetric.high ?? null,
-            confidence: item.confidence ?? null,
-          };
+          return buildStoredMetric({ item, catalogMetric, metricKey });
         })
         .filter(Boolean);
       if (!normalizedMetrics.length) continue;
@@ -394,8 +797,10 @@ const registerPatientRoutes = (fastify, deps) => {
       for (const metric of normalizedMetrics) {
         await run(
           `INSERT INTO medical_record_section_metrics
-           (section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           (section_analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, confidence, created_at,
+            original_metric_label, original_unit, original_reference_low, original_reference_high, original_reference_text, interpretation_band,
+            original_value_text, normalized_value_text)
+           VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
           [
             insert.lastID,
             metric.metricKey,
@@ -406,6 +811,14 @@ const registerPatientRoutes = (fastify, deps) => {
             metric.referenceHigh,
             metric.confidence ?? null,
             now,
+            metric.originalMetricLabel,
+            metric.originalUnit,
+            metric.originalReferenceLow,
+            metric.originalReferenceHigh,
+            metric.originalReferenceText,
+            metric.interpretationBand,
+            metric.originalValueText,
+            metric.normalizedValueText,
           ],
         );
       }
@@ -485,6 +898,38 @@ const registerPatientRoutes = (fastify, deps) => {
           now,
         ],
       );
+    }
+  };
+
+  const deleteMedicalRecordArtifacts = async (recordId, filePath = "") => {
+    const analysisRows = await all(`SELECT id FROM medical_record_analyses WHERE record_id = ?`, [recordId]);
+    for (const analysis of analysisRows) {
+      await run(`DELETE FROM medical_record_metrics WHERE analysis_id = ?`, [analysis.id]);
+      await run(`DELETE FROM medical_record_analyses WHERE id = ?`, [analysis.id]);
+    }
+
+    const sectionRows = await all(`SELECT id FROM medical_record_section_analyses WHERE record_id = ?`, [recordId]);
+    for (const section of sectionRows) {
+      await run(`DELETE FROM medical_record_section_metrics WHERE section_analysis_id = ?`, [section.id]);
+      await run(`DELETE FROM medical_record_section_analyses WHERE id = ?`, [section.id]);
+    }
+
+    await run(`DELETE FROM medical_record_extractions WHERE record_id = ?`, [recordId]);
+    await run(`DELETE FROM medical_records WHERE id = ?`, [recordId]);
+
+    try {
+      if (filePath && fs.existsSync(filePath)) {
+        fs.unlinkSync(filePath);
+      }
+    } catch {
+      // best effort: keep account cleanup resilient even if the file is already gone
+    }
+  };
+
+  const deleteAllPatientMedicalRecords = async (userId) => {
+    const records = await all(`SELECT id, file_path FROM medical_records WHERE user_id = ?`, [userId]);
+    for (const record of records) {
+      await deleteMedicalRecordArtifacts(record.id, record.file_path || "");
     }
   };
 
@@ -620,6 +1065,7 @@ const registerPatientRoutes = (fastify, deps) => {
       bloodType = "",
       conditions = [],
       allergies = [],
+      medications = [],
     } = request.body || {};
 
     if (!name) {
@@ -696,13 +1142,20 @@ const registerPatientRoutes = (fastify, deps) => {
     const member = await getFamilyMember(request.authUser.id, memberId);
     if (!member) return reply.code(404).send({ error: "Member not found." });
     const records = await all(
-      `SELECT id, file_name, mimetype, created_at FROM medical_records
-       WHERE user_id = ? AND member_id = ? ORDER BY created_at DESC`,
+       `SELECT mr.id, mr.file_name, mr.original_file_name, mr.display_label, mr.mimetype, mr.source, mr.source_label, mr.created_at,
+               uploader.name AS uploaded_by_name, uploader.email AS uploaded_by_email
+        FROM medical_records mr
+        LEFT JOIN users uploader ON uploader.id = mr.uploaded_by_user_id
+        WHERE user_id = ? AND member_id = ? ORDER BY mr.created_at DESC`,
       [request.authUser.id, memberId],
     );
     return {
       records: records.map((row) => ({
         ...row,
+        label: row.display_label || row.original_file_name || row.file_name,
+        original_name: row.original_file_name || "",
+        uploaded_by_name: row.uploaded_by_name || "",
+        uploaded_by_email: row.uploaded_by_email || "",
         downloadUrl: `/api/records/${row.id}/download`,
       })),
     };
@@ -711,13 +1164,20 @@ const registerPatientRoutes = (fastify, deps) => {
   fastify.get("/api/records", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
     const records = await all(
-      `SELECT id, file_name, mimetype, created_at FROM medical_records
-       WHERE user_id = ? AND member_id IS NULL ORDER BY created_at DESC`,
+       `SELECT mr.id, mr.file_name, mr.original_file_name, mr.display_label, mr.mimetype, mr.source, mr.source_label, mr.created_at,
+               uploader.name AS uploaded_by_name, uploader.email AS uploaded_by_email
+        FROM medical_records mr
+        LEFT JOIN users uploader ON uploader.id = mr.uploaded_by_user_id
+        WHERE user_id = ? AND member_id IS NULL ORDER BY mr.created_at DESC`,
       [request.authUser.id],
     );
     return {
       records: records.map((row) => ({
         ...row,
+        label: row.display_label || row.original_file_name || row.file_name,
+        original_name: row.original_file_name || "",
+        uploaded_by_name: row.uploaded_by_name || "",
+        uploaded_by_email: row.uploaded_by_email || "",
         downloadUrl: `/api/records/${row.id}/download`,
       })),
     };
@@ -725,18 +1185,334 @@ const registerPatientRoutes = (fastify, deps) => {
 
   fastify.get("/api/records/insights", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
+    try {
+      const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+      const months = request.query?.months ? Number(request.query.months) : 6;
+      const lang = normalizeLanguage(request.query?.lang);
+      if (memberId) {
+        const member = await getFamilyMember(request.authUser.id, memberId);
+        if (!member) return reply.code(404).send({ error: "Member not found." });
+      }
+      const payload = await loadReportInsightPayload({
+        userId: request.authUser.id,
+        memberId,
+        months,
+        lang,
+      });
+      return payload;
+    } catch (error) {
+      request.log.error({ error }, "Unable to build report insights payload");
+      const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+      const records = await all(
+        `SELECT mr.id, mr.file_name, mr.original_file_name, mr.display_label, mr.mimetype, mr.source, mr.source_label, mr.created_at,
+                uploader.name AS uploaded_by_name, uploader.email AS uploaded_by_email
+         FROM medical_records mr
+         LEFT JOIN users uploader ON uploader.id = mr.uploaded_by_user_id
+         WHERE user_id = ?
+           AND COALESCE(member_id, 0) = COALESCE(?, 0)
+         ORDER BY mr.created_at DESC`,
+        [request.authUser.id, memberId || 0],
+      );
+      return {
+        catalog: reportCatalog,
+        extractionCapabilities: getExtractionCapabilities(),
+        records: records.map((record) => ({
+          ...record,
+          label: record.display_label || record.original_file_name || record.file_name,
+          original_name: record.original_file_name || "",
+          uploaded_by_name: record.uploaded_by_name || "",
+          uploaded_by_email: record.uploaded_by_email || "",
+          analysis: null,
+          analyses: [],
+          extraction: null,
+          downloadUrl: `/api/records/${record.id}/download`,
+        })),
+        insights: null,
+        processing: true,
+      };
+    }
+  });
+
+  fastify.get("/api/health-continuity-agent", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    try {
+      const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+      const months = request.query?.months ? Number(request.query.months) : 12;
+      const lang = normalizeLanguage(request.query?.lang);
+      if (memberId) {
+        const member = await getFamilyMember(request.authUser.id, memberId);
+        if (!member) return reply.code(404).send({ error: "Member not found." });
+      }
+      const payload = await loadContinuityAgentPayload({
+        userId: request.authUser.id,
+        memberId,
+        months,
+        lang,
+      });
+      return { agent: payload.agent };
+    } catch (error) {
+      request.log.error({ error }, "Unable to build health continuity agent payload");
+      return reply.code(500).send({ error: "Unable to prepare health continuity memory right now." });
+    }
+  });
+
+  fastify.get("/api/health-continuity-agent/doctor-handoff", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    try {
+      const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+      const months = request.query?.months ? Number(request.query.months) : 12;
+      const lang = normalizeLanguage(request.query?.lang);
+      if (memberId) {
+        const member = await getFamilyMember(request.authUser.id, memberId);
+        if (!member) return reply.code(404).send({ error: "Member not found." });
+      }
+      const payload = await loadContinuityAgentPayload({
+        userId: request.authUser.id,
+        memberId,
+        months,
+        lang,
+      });
+      const handoff = payload.agent?.doctorHandoff || {};
+      const text = formatDoctorHandoffText(handoff, payload.agent?.aiSafetyReview || null);
+      return {
+        handoff,
+        text,
+        shareText: text,
+        meta: {
+          generatedAt: nowIso(),
+          posture: "preparation_organization_continuity",
+          labRecommendationAgent: "excluded_by_strategy",
+        },
+      };
+    } catch (error) {
+      request.log.error({ error }, "Unable to build doctor handoff payload");
+      return reply.code(500).send({ error: "Unable to prepare doctor handoff right now." });
+    }
+  });
+
+  fastify.get("/api/health-plan", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
     const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
-    const months = request.query?.months ? Number(request.query.months) : 6;
+    const focusKey = String(request.query?.focusKey || "").trim().toLowerCase();
+    if (!focusKey) {
+      return reply.code(400).send({ error: "focusKey is required." });
+    }
     if (memberId) {
       const member = await getFamilyMember(request.authUser.id, memberId);
       if (!member) return reply.code(404).send({ error: "Member not found." });
     }
-    const payload = await loadReportInsightPayload({
+    return loadPatientHealthPlan({ userId: request.authUser.id, memberId, focusKey });
+  });
+
+  fastify.put("/api/health-plan", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const memberId = request.body?.memberId ? Number(request.body.memberId) : null;
+    if (memberId) {
+      const member = await getFamilyMember(request.authUser.id, memberId);
+      if (!member) return reply.code(404).send({ error: "Member not found." });
+    }
+    const payload = normalizePlanPayload(request.body || {});
+    if (!payload.focusKey || !payload.title) {
+      return reply.code(400).send({ error: "focusKey and title are required." });
+    }
+    const planResult = await upsertPatientHealthPlan({
       userId: request.authUser.id,
       memberId,
-      months,
+      ...payload,
     });
-    return payload;
+    if (planResult.created) {
+      await run(
+        `INSERT INTO analytics_events (user_id, event_name, event_payload, created_at)
+         VALUES (?, ?, ?, ?)`,
+        [
+          request.authUser.id,
+          "plan_started",
+          JSON.stringify({
+            focusKey: payload.focusKey,
+            memberId: memberId || null,
+            title: payload.title,
+          }),
+          nowIso(),
+        ],
+      );
+    }
+    return loadPatientHealthPlan({ userId: request.authUser.id, memberId, focusKey: payload.focusKey });
+  });
+
+  fastify.post("/api/health-plan/activity", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const memberId = request.body?.memberId ? Number(request.body.memberId) : null;
+    if (memberId) {
+      const member = await getFamilyMember(request.authUser.id, memberId);
+      if (!member) return reply.code(404).send({ error: "Member not found." });
+    }
+    const payload = normalizePlanPayload(request.body || {});
+    const trackerKey = String(request.body?.trackerKey || "").trim();
+    const label = String(request.body?.label || "").trim();
+    const value = String(request.body?.value || "").trim();
+    const unit = String(request.body?.unit || "").trim();
+    const loggedAt = String(request.body?.loggedAt || nowIso()).trim();
+    if (!payload.focusKey || !payload.title || !trackerKey || !label || !value) {
+      return reply.code(400).send({ error: "focusKey, title, trackerKey, label, and value are required." });
+    }
+    const planResult = await upsertPatientHealthPlan({
+      userId: request.authUser.id,
+      memberId,
+      ...payload,
+    });
+    const planId = planResult.id;
+    if (planResult.created) {
+      await run(
+        `INSERT INTO analytics_events (user_id, event_name, event_payload, created_at)
+         VALUES (?, ?, ?, ?)`,
+        [
+          request.authUser.id,
+          "plan_started",
+          JSON.stringify({
+            focusKey: payload.focusKey,
+            memberId: memberId || null,
+            title: payload.title,
+            source: "activity_log",
+          }),
+          nowIso(),
+        ],
+      );
+    }
+    await run(
+      `INSERT INTO patient_health_plan_activity
+       (plan_id, user_id, member_id, tracker_key, label, value_text, unit, logged_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      [planId, request.authUser.id, memberId || null, trackerKey, label, value, unit || "", loggedAt, nowIso()],
+    );
+    await run(
+      `INSERT INTO analytics_events (user_id, event_name, event_payload, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [
+        request.authUser.id,
+        "health_memory_saved",
+        JSON.stringify({
+          focusKey: payload.focusKey,
+          memberId: memberId || null,
+          trackerKey,
+          label,
+        }),
+        nowIso(),
+      ],
+    );
+    return loadPatientHealthPlan({ userId: request.authUser.id, memberId, focusKey: payload.focusKey });
+  });
+
+  /* ── Daily check-ins — persist across devices ── */
+  fastify.post("/api/checkin", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const { metricKey, checkInId, dateKey, value, memberId: rawMemberId } = request.body || {};
+    if (!metricKey || !checkInId || !dateKey) {
+      return reply.code(400).send({ error: "metricKey, checkInId, and dateKey required." });
+    }
+    const memberId = rawMemberId ? Number(rawMemberId) : null;
+    const scopeKey = buildScopeKey(memberId);
+
+    // Upsert a stub plan for check-in tracking
+    const planFocusKey = `checkin_${metricKey}`;
+    const existing = await get(
+      `SELECT id FROM patient_health_plans WHERE user_id = ? AND scope_key = ? AND focus_key = ?`,
+      [request.authUser.id, scopeKey, planFocusKey]
+    );
+    let planId;
+    if (existing) {
+      planId = existing.id;
+    } else {
+      const result = await run(
+        `INSERT INTO patient_health_plans (user_id, member_id, scope_key, focus_key, title, progress_json, plan_source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [request.authUser.id, memberId, scopeKey, planFocusKey,
+         `Check-ins: ${metricKey}`, '{}', 'checkin', nowIso(), nowIso()]
+      );
+      planId = result.lastID;
+    }
+
+    // Upsert the check-in record for this date (delete + insert = idempotent)
+    await run(
+      `DELETE FROM patient_health_plan_activity
+       WHERE plan_id = ? AND tracker_key = ? AND label = ? AND DATE(logged_at) = ?`,
+      [planId, 'checkin', checkInId, dateKey]
+    );
+    if (value && value !== "") {
+      await run(
+        `INSERT INTO patient_health_plan_activity
+         (plan_id, user_id, member_id, tracker_key, label, value_text, unit, logged_at, created_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [planId, request.authUser.id, memberId || null, 'checkin', checkInId, value, '', dateKey + 'T00:00:00.000Z', nowIso()]
+      );
+    }
+    return reply.send({ ok: true });
+  });
+
+  fastify.get("/api/checkins", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+    const metricKey = String(request.query?.metricKey || "").trim();
+    if (!metricKey) return reply.code(400).send({ error: "metricKey required." });
+    const scopeKey = buildScopeKey(memberId);
+
+    const rows = await all(
+      `SELECT a.label AS checkInId, a.value_text AS value, DATE(a.logged_at) AS dateKey
+       FROM patient_health_plan_activity a
+       JOIN patient_health_plans p ON p.id = a.plan_id
+       WHERE p.user_id = ? AND p.scope_key = ? AND p.focus_key = ?
+         AND a.tracker_key = 'checkin'
+         AND a.logged_at >= datetime('now', '-30 days')`,
+      [request.authUser.id, scopeKey, `checkin_${metricKey}`]
+    );
+    return reply.send({ checkins: rows });
+  });
+
+  /* ── Retest reminders — persist across devices ── */
+  fastify.post("/api/retest-reminder", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const { metricKey, dueDate, label, memberId: rawMemberId } = request.body || {};
+    if (!metricKey || !dueDate) return reply.code(400).send({ error: "metricKey and dueDate required." });
+    const memberId = rawMemberId ? Number(rawMemberId) : null;
+    const scopeKey = buildScopeKey(memberId);
+    const setAt = nowIso().slice(0, 10);
+
+    // Store inside progress_json of an existing plan, or create a stub plan for reminders
+    const existing = await get(
+      `SELECT id, progress_json FROM patient_health_plans WHERE user_id = ? AND scope_key = ? AND focus_key = ?`,
+      [request.authUser.id, scopeKey, `retest_${metricKey}`]
+    );
+    const progress = existing ? safeJsonParse(existing.progress_json, {}) : {};
+    progress.retestReminder = { metricKey, dueDate, label: label || metricKey, setAt };
+
+    if (existing) {
+      await run(
+        `UPDATE patient_health_plans SET progress_json = ?, updated_at = ? WHERE id = ?`,
+        [JSON.stringify(progress), nowIso(), existing.id]
+      );
+    } else {
+      await run(
+        `INSERT INTO patient_health_plans (user_id, member_id, scope_key, focus_key, title, progress_json, plan_source, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+        [request.authUser.id, memberId, scopeKey, `retest_${metricKey}`,
+         `Retest reminder: ${label || metricKey}`, JSON.stringify(progress), "retest", nowIso(), nowIso()]
+      );
+    }
+    return reply.send({ ok: true, metricKey, dueDate, setAt });
+  });
+
+  fastify.get("/api/retest-reminders", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+    const scopeKey = buildScopeKey(memberId);
+    const rows = await all(
+      `SELECT progress_json FROM patient_health_plans
+       WHERE user_id = ? AND scope_key = ? AND focus_key LIKE 'retest_%'`,
+      [request.authUser.id, scopeKey]
+    );
+    const reminders = rows
+      .map(r => safeJsonParse(r.progress_json, {})?.retestReminder)
+      .filter(Boolean);
+    return reply.send({ reminders });
   });
 
   fastify.post("/api/records/:recordId/analysis", async (request, reply) => {
@@ -859,186 +1635,27 @@ const registerPatientRoutes = (fastify, deps) => {
   });
 
   fastify.post("/api/records/demo-seed", async (request, reply) => {
-    if (!requireAuth(request, reply)) return;
-    const memberId = request.body?.memberId ? Number(request.body.memberId) : null;
-    if (memberId) {
-      const member = await getFamilyMember(request.authUser.id, memberId);
-      if (!member) return reply.code(404).send({ error: "Member not found." });
-    }
-
-    const userId = request.authUser.id;
-    const existingDemoRows = await all(
-      `SELECT a.id AS analysis_id, r.id AS record_id, r.file_path
-       FROM medical_record_analyses a
-       JOIN medical_records r ON r.id = a.record_id
-       WHERE a.user_id = ?
-         AND COALESCE(a.member_id, 0) = COALESCE(?, 0)
-         AND a.source = 'demo_seed'
-       UNION
-       SELECT sa.id AS analysis_id, r.id AS record_id, r.file_path
-       FROM medical_record_section_analyses sa
-       JOIN medical_records r ON r.id = sa.record_id
-       WHERE sa.user_id = ?
-         AND COALESCE(sa.member_id, 0) = COALESCE(?, 0)
-         AND sa.source = 'demo_seed'`,
-      [userId, memberId || null, userId, memberId || null],
-    );
-    for (const row of existingDemoRows) {
-      await run(`DELETE FROM medical_record_metrics WHERE analysis_id = ?`, [row.analysis_id]);
-      await run(`DELETE FROM medical_record_analyses WHERE id = ?`, [row.analysis_id]);
-      await run(`DELETE FROM medical_record_section_metrics WHERE section_analysis_id = ?`, [row.analysis_id]);
-      await run(`DELETE FROM medical_record_section_analyses WHERE id = ?`, [row.analysis_id]);
-      await run(`DELETE FROM medical_record_extractions WHERE record_id = ?`, [row.record_id]);
-      await run(`DELETE FROM medical_records WHERE id = ?`, [row.record_id]);
-      if (row.file_path && fs.existsSync(row.file_path)) {
-        fs.unlinkSync(row.file_path);
-      }
-    }
-    const now = new Date();
-    const demoRows = [
-      {
-        monthsAgo: 11,
-        fileName: "demo-hba1c-11m.txt",
-        reportType: "hba1c",
-        text: "HbA1c report. HbA1c 9.1 %",
-        metrics: [{ metricKey: "hba1c", valueNum: 9.1 }],
-      },
-      {
-        monthsAgo: 7,
-        fileName: "demo-cbc-7m.txt",
-        reportType: "cbc",
-        text: "Complete blood count. Hemoglobin 10.4 g/dL. WBC 7.8. Platelet count 210.",
-        metrics: [
-          { metricKey: "hemoglobin", valueNum: 10.4 },
-          { metricKey: "wbc", valueNum: 7.8 },
-          { metricKey: "platelets", valueNum: 210 },
-        ],
-      },
-      {
-        monthsAgo: 5,
-        fileName: "demo-renal-5m.txt",
-        reportType: "renal",
-        text: "Renal function test. Creatinine 1.6 mg/dL. Urea 48 mg/dL. Uric acid 6.1 mg/dL.",
-        metrics: [
-          { metricKey: "creatinine", valueNum: 1.6 },
-          { metricKey: "urea", valueNum: 48 },
-          { metricKey: "uric_acid", valueNum: 6.1 },
-        ],
-      },
-      {
-        monthsAgo: 3,
-        fileName: "demo-thyroid-3m.txt",
-        reportType: "thyroid",
-        text: "Thyroid profile. TSH 6.2 uIU/mL. T3 110 ng/dL. T4 7.1 ug/dL.",
-        metrics: [
-          { metricKey: "tsh", valueNum: 6.2 },
-          { metricKey: "t3", valueNum: 110 },
-          { metricKey: "t4", valueNum: 7.1 },
-        ],
-      },
-      {
-        monthsAgo: 2,
-        fileName: "demo-lipid-2m.txt",
-        reportType: "lipid",
-        text: "Lipid profile. Total cholesterol 238 mg/dL. LDL 156 mg/dL. HDL 36 mg/dL. Triglycerides 226 mg/dL.",
-        metrics: [
-          { metricKey: "total_cholesterol", valueNum: 238 },
-          { metricKey: "ldl", valueNum: 156 },
-          { metricKey: "hdl", valueNum: 36 },
-          { metricKey: "triglycerides", valueNum: 226 },
-        ],
-      },
-      {
-        monthsAgo: 1,
-        fileName: "demo-liver-1m.txt",
-        reportType: "liver",
-        text: "Liver function test. Bilirubin total 1.8 mg/dL. SGPT 82 U/L. SGOT 66 U/L.",
-        metrics: [
-          { metricKey: "bilirubin_total", valueNum: 1.8 },
-          { metricKey: "sgpt_alt", valueNum: 82 },
-          { metricKey: "sgot_ast", valueNum: 66 },
-        ],
-      },
-      {
-        monthsAgo: 1,
-        fileName: "demo-hba1c-1m.txt",
-        reportType: "hba1c",
-        text: "HbA1c report. HbA1c 7.4 %",
-        metrics: [{ metricKey: "hba1c", valueNum: 7.4 }],
-      },
-      {
-        monthsAgo: 0,
-        fileName: "demo-glucose-current.txt",
-        reportType: "glucose",
-        text: "Blood sugar profile. FBS 138 mg/dL. PPBS 218 mg/dL. RBS 189 mg/dL.",
-        metrics: [
-          { metricKey: "fbs", valueNum: 138 },
-          { metricKey: "ppbs", valueNum: 218 },
-          { metricKey: "rbs", valueNum: 189 },
-        ],
-      },
-    ];
-
-    const createdRecordIds = [];
-    for (const row of demoRows) {
-      const reportDateObj = new Date(now);
-      reportDateObj.setMonth(reportDateObj.getMonth() - row.monthsAgo);
-      const reportDate = reportDateObj.toISOString().slice(0, 10);
-      const createdAt = `${reportDate}T08:00:00.000Z`;
-      const filePath = path.join(RECORDS_DIR, `${Date.now()}-${Math.random().toString(36).slice(2)}-${row.fileName}`);
-      fs.writeFileSync(filePath, row.text, "utf8");
-
-      const recordInsert = await run(
-        `INSERT INTO medical_records
-         (user_id, member_id, file_name, file_path, mimetype, created_at)
-         VALUES (?, ?, ?, ?, ?, ?)`,
-        [userId, memberId || null, row.fileName, filePath, "text/plain", createdAt],
-      );
-      const analysisInsert = await run(
-        `INSERT INTO medical_record_analyses
-         (record_id, user_id, member_id, report_type, report_date, notes, source, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, 'demo_seed', ?, ?)`,
-        [recordInsert.lastID, userId, memberId || null, row.reportType, reportDate, "Demo seeded lab report for trend review.", createdAt, createdAt],
-      );
-
-      const catalogEntry = reportCatalogMap.get(row.reportType);
-      for (const metric of row.metrics) {
-        const definition = catalogEntry?.metrics?.find((item) => item.key === metric.metricKey);
-        if (!definition) continue;
-        await run(
-          `INSERT INTO medical_record_metrics
-           (analysis_id, metric_key, metric_label, value_num, unit, reference_low, reference_high, created_at)
-           VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
-          [
-            analysisInsert.lastID,
-            definition.key,
-            definition.label,
-            metric.valueNum,
-            definition.unit || "",
-            definition.low ?? null,
-            definition.high ?? null,
-            createdAt,
-          ],
-        );
-      }
-      createdRecordIds.push(recordInsert.lastID);
-    }
-
-    return { ok: true, created: createdRecordIds.length };
+    return reply.code(410).send({ error: "Demo report seeding is disabled." });
   });
 
   fastify.get("/api/admin/patients/:patientId/records", async (request, reply) => {
     if (!requireOps(request, reply)) return;
     const { patientId } = request.params;
+    const sourceFilter = String(request.query?.source || "all").trim().toLowerCase();
     const patient = await get("SELECT id FROM users WHERE id = ? AND role = 'patient'", [patientId]);
     if (!patient) return reply.code(404).send({ error: "Patient not found." });
+    const sourceSql = sourceFilter === "all" ? "" : "AND source = ?";
+    const params = sourceFilter === "all" ? [patientId] : [patientId, sourceFilter];
     const records = await all(
-      `SELECT id, file_name, mimetype, created_at
-       FROM medical_records
-       WHERE user_id = ? AND member_id IS NULL
-       ORDER BY created_at DESC
+      `SELECT mr.id, mr.file_name, mr.original_file_name, mr.display_label, mr.mimetype, mr.source, mr.source_label, mr.created_at,
+              uploader.id AS uploaded_by_user_id, uploader.name AS uploaded_by_name, uploader.email AS uploaded_by_email
+       FROM medical_records mr
+       LEFT JOIN users uploader ON uploader.id = mr.uploaded_by_user_id
+       WHERE mr.user_id = ? AND mr.member_id IS NULL
+       ${sourceSql}
+       ORDER BY mr.created_at DESC
        LIMIT 50`,
-      [patientId],
+      params,
     );
     return { records };
   });
@@ -1068,12 +1685,15 @@ const registerPatientRoutes = (fastify, deps) => {
     if (!request.isMultipart()) return reply.code(400).send({ error: "multipart form-data required." });
 
     let fileMeta = null;
+    let originalFilename = "";
     for await (const part of request.parts()) {
       if (part.type === "file") {
-        if (!part.mimetype || (!part.mimetype.startsWith("image/") && part.mimetype !== "application/pdf")) {
+        if (!isSupportedReportUploadPart(part)) {
           return reply.code(400).send({ error: "Unsupported format. Upload a PDF or a clear image file (JPG, PNG, HEIC, WEBP)." });
         }
+        originalFilename = String(part.filename || "").trim();
         fileMeta = await saveUpload(part, { dir: RECORDS_DIR, prefix: "record" });
+        fileMeta.mimetype = inferReportMimeType(originalFilename || fileMeta.filename, fileMeta.mimetype);
       }
     }
     if (!fileMeta) return reply.code(400).send({ error: "record file is required." });
@@ -1085,26 +1705,54 @@ const registerPatientRoutes = (fastify, deps) => {
     const assessment = assessUploadReadability({ mimetype: fileMeta.mimetype, extraction, suggestion });
 
     const result = await run(
-      `INSERT INTO medical_records (user_id, member_id, file_name, file_path, mimetype, created_at)
-       VALUES (?, ?, ?, ?, ?, ?)`,
-      [request.authUser.id, memberId, fileMeta.filename, fileMeta.path, fileMeta.mimetype, nowIso()],
+      `INSERT INTO medical_records (user_id, member_id, file_name, file_path, mimetype, source, source_label, uploaded_by_user_id, original_file_name, display_label, created_at)
+       VALUES (?, ?, ?, ?, ?, 'patient_upload', 'Patient upload', ?, ?, ?, ?)`,
+      [request.authUser.id, memberId, fileMeta.filename, fileMeta.path, fileMeta.mimetype, request.authUser.id, originalFilename || null, originalFilename || fileMeta.filename, nowIso()],
     );
-    await autoExtractAndAnalyzeRecord({
-      recordId: result.lastID,
-      userId: request.authUser.id,
-      memberId,
-      filePath: fileMeta.path,
-      mimetype: fileMeta.mimetype,
-      reportDate: nowIso().slice(0, 10),
-      extraction,
-      suggestion,
-    });
+    let autoAnalysis = null;
+    try {
+      autoAnalysis = await autoExtractAndAnalyzeRecord({
+        recordId: result.lastID,
+        userId: request.authUser.id,
+        memberId,
+        filePath: fileMeta.path,
+        mimetype: fileMeta.mimetype,
+        reportDate: nowIso().slice(0, 10),
+        extraction,
+        suggestion,
+      });
+    } catch (error) {
+      request.log.error({ error }, "Family report auto-extraction failed after upload");
+      autoAnalysis = { ok: false, reason: "Insights are still processing." };
+    }
+    let pipeline = null;
+    try {
+      const continuityPayload = await loadContinuityAgentPayload({
+        userId: request.authUser.id,
+        memberId,
+        months: 12,
+      });
+      pipeline = buildPipelineFromAgent({
+        record: { id: result.lastID },
+        extractionAssessment: assessment,
+        autoAnalysis,
+        insightPayload: continuityPayload,
+        agent: continuityPayload.agent,
+        aiSafetyReview: continuityPayload.agent?.aiSafetyReview,
+      });
+      // generateDueRemindersForUser — not yet implemented
+      // pipeline.stages.engagement.remindersQueued = false; (disabled until push infra)
+      pipeline.stages.engagement.evidence = "Reminder check completed after upload";
+    } catch (error) {
+      request.log.error({ error }, "Family report continuity pipeline failed after upload");
+    }
     return {
       id: result.lastID,
       message: assessment.ok
         ? "Report uploaded and parsed."
         : "Report uploaded. Auto-read was limited, so you may need to review or add values manually.",
       extractionStatus: assessment.ok ? "parsed" : "review_needed",
+      pipeline,
     };
   });
 
@@ -1112,12 +1760,15 @@ const registerPatientRoutes = (fastify, deps) => {
     if (!requireAuth(request, reply)) return;
     if (!request.isMultipart()) return reply.code(400).send({ error: "multipart form-data required." });
     let fileMeta = null;
+    let originalFilename = "";
     for await (const part of request.parts()) {
       if (part.type === "file") {
-        if (!part.mimetype || (!part.mimetype.startsWith("image/") && part.mimetype !== "application/pdf")) {
+        if (!isSupportedReportUploadPart(part)) {
           return reply.code(400).send({ error: "Unsupported format. Upload a PDF or a clear image file (JPG, PNG, HEIC, WEBP)." });
         }
+        originalFilename = String(part.filename || "").trim();
         fileMeta = await saveUpload(part, { dir: RECORDS_DIR, prefix: "record" });
+        fileMeta.mimetype = inferReportMimeType(originalFilename || fileMeta.filename, fileMeta.mimetype);
       }
     }
     if (!fileMeta) return reply.code(400).send({ error: "record file is required." });
@@ -1129,26 +1780,59 @@ const registerPatientRoutes = (fastify, deps) => {
     const assessment = assessUploadReadability({ mimetype: fileMeta.mimetype, extraction, suggestion });
 
     const result = await run(
-      `INSERT INTO medical_records (user_id, member_id, file_name, file_path, mimetype, created_at)
-       VALUES (?, NULL, ?, ?, ?, ?)`,
-      [request.authUser.id, fileMeta.filename, fileMeta.path, fileMeta.mimetype, nowIso()],
+      `INSERT INTO medical_records (user_id, member_id, file_name, file_path, mimetype, source, source_label, uploaded_by_user_id, original_file_name, display_label, created_at)
+       VALUES (?, NULL, ?, ?, ?, 'patient_upload', 'Patient upload', ?, ?, ?, ?)`,
+      [request.authUser.id, fileMeta.filename, fileMeta.path, fileMeta.mimetype, request.authUser.id, originalFilename || null, originalFilename || fileMeta.filename, nowIso()],
     );
-    await autoExtractAndAnalyzeRecord({
-      recordId: result.lastID,
-      userId: request.authUser.id,
-      memberId: null,
-      filePath: fileMeta.path,
-      mimetype: fileMeta.mimetype,
-      reportDate: nowIso().slice(0, 10),
-      extraction,
-      suggestion,
-    });
+    let extractionMessage = "Report uploaded and parsed.";
+    let analysis = null;
+    try {
+      analysis = await autoExtractAndAnalyzeRecord({
+        recordId: result.lastID,
+        userId: request.authUser.id,
+        memberId: null,
+        filePath: fileMeta.path,
+        mimetype: fileMeta.mimetype,
+        reportDate: nowIso().slice(0, 10),
+        extraction,
+        suggestion,
+      });
+      if (!analysis?.ok) {
+        extractionMessage = "Report uploaded. Insights are still processing. Please check again shortly.";
+      }
+    } catch (error) {
+      request.log.error({ error }, "Report auto-extraction failed after upload");
+      extractionMessage = "Report uploaded. Insights are still processing. Please check again shortly.";
+      analysis = { ok: false, reason: "Insights are still processing." };
+    }
+    let pipeline = null;
+    try {
+      const continuityPayload = await loadContinuityAgentPayload({
+        userId: request.authUser.id,
+        memberId: null,
+        months: 12,
+      });
+      pipeline = buildPipelineFromAgent({
+        record: { id: result.lastID },
+        extractionAssessment: assessment,
+        autoAnalysis: analysis,
+        insightPayload: continuityPayload,
+        agent: continuityPayload.agent,
+        aiSafetyReview: continuityPayload.agent?.aiSafetyReview,
+      });
+      // generateDueRemindersForUser — not yet implemented
+      // pipeline.stages.engagement.remindersQueued = false; (disabled until push infra)
+      pipeline.stages.engagement.evidence = "Reminder check completed after upload";
+    } catch (error) {
+      request.log.error({ error }, "Report continuity pipeline failed after upload");
+    }
     return {
       id: result.lastID,
       message: assessment.ok
-        ? "Report uploaded and parsed."
+        ? extractionMessage
         : "Report uploaded. Auto-read was limited, so you may need to review or add values manually.",
       extractionStatus: assessment.ok ? "parsed" : "review_needed",
+      pipeline,
     };
   });
 
@@ -1178,26 +1862,7 @@ const registerPatientRoutes = (fastify, deps) => {
       [recordId, request.authUser.id],
     );
     if (!record) return reply.code(404).send({ error: "Record not found." });
-
-    const analysisRows = await all(`SELECT id FROM medical_record_analyses WHERE record_id = ?`, [recordId]);
-    for (const analysis of analysisRows) {
-      await run(`DELETE FROM medical_record_metrics WHERE analysis_id = ?`, [analysis.id]);
-      await run(`DELETE FROM medical_record_analyses WHERE id = ?`, [analysis.id]);
-    }
-    const sectionRows = await all(`SELECT id FROM medical_record_section_analyses WHERE record_id = ?`, [recordId]);
-    for (const section of sectionRows) {
-      await run(`DELETE FROM medical_record_section_metrics WHERE section_analysis_id = ?`, [section.id]);
-      await run(`DELETE FROM medical_record_section_analyses WHERE id = ?`, [section.id]);
-    }
-    await run(`DELETE FROM medical_record_extractions WHERE record_id = ?`, [recordId]);
-    await run("DELETE FROM medical_records WHERE id = ? AND user_id = ?", [recordId, request.authUser.id]);
-    try {
-      if (record.file_path && fs.existsSync(record.file_path)) {
-        fs.unlinkSync(record.file_path);
-      }
-    } catch (error) {
-      request.log.error(error);
-    }
+    await deleteMedicalRecordArtifacts(recordId, record.file_path || "");
     return { ok: true };
   });
 
@@ -1235,6 +1900,87 @@ const registerPatientRoutes = (fastify, deps) => {
         createdAt: row.created_at,
       })),
     };
+  });
+
+  fastify.get("/api/abha/status", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const status = abdmService?.getStatus?.() || {
+      enabled: false,
+      configured: false,
+      verificationConfigured: false,
+      profileFetchConfigured: false,
+    };
+    return {
+      enabled: status.enabled,
+      configured: status.configured,
+      verificationAvailable: status.verificationConfigured,
+      profileFetchAvailable: status.profileFetchConfigured,
+      mode: status.verificationConfigured ? "live_abdm" : "self_reported",
+      message: status.verificationConfigured
+        ? "ABDM verification is available."
+        : "ABHA can be saved as self-reported. Live ABDM verification is not connected yet.",
+    };
+  });
+
+  fastify.post("/api/abha/fetch-profile", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    // Live ABDM fetch deferred — ABDM sandbox registration pending.
+    return reply.code(503).send({ error: "Live ABHA fetch is not available yet. Your ABHA details are saved as self-reported." });
+    const targetUserId = request.authUser.id;
+    const validation = validateAbhaIdentity({
+      abhaNumber: request.body?.abhaNumber || "",
+      abhaAddress: request.body?.abhaAddress || "",
+    });
+    if (!validation.ok) {
+      return reply.code(400).send({ error: validation.error });
+    }
+    const { normalizedNumber, normalizedAddress } = validation;
+    if (!normalizedNumber && !normalizedAddress) {
+      return reply.code(400).send({ error: "Enter ABHA number or ABHA address first." });
+    }
+    const result = abdmService
+      ? await abdmService.fetchAbhaProfile({
+          abhaNumber: normalizedNumber,
+          abhaAddress: normalizedAddress,
+        })
+      : { ok: false, error: "ABHA profile fetch is not configured yet." };
+    if (!result.ok) {
+      return reply.code(400).send({ error: result.error || "Unable to fetch ABHA profile right now." });
+    }
+
+    const currentProfile = await readPatientProfileByUserId(targetUserId);
+    return {
+      ok: true,
+      profile: mergeFetchedAbhaProfile(currentProfile || {}, result.profile || {}),
+      message: "ABHA details fetched.",
+    };
+  });
+
+  fastify.get("/api/admin/abha/integration-status", async (request, reply) => {
+    if (!requireOps(request, reply)) return;
+    if (!["admin", "front_desk"].includes(request.authUser.role)) {
+      return reply.code(403).send({ error: "Forbidden." });
+    }
+    return {
+      status: abdmService?.getStatus?.() || {
+        enabled: false,
+        configured: false,
+        sessionConfigured: false,
+        verificationConfigured: false,
+        profileFetchConfigured: false,
+      },
+    };
+  });
+
+  fastify.post("/api/admin/abha/test-connection", async (request, reply) => {
+    if (!requireOps(request, reply)) return;
+    if (request.authUser.role !== "admin") {
+      return reply.code(403).send({ error: "Only an administrator can test the ABDM connection." });
+    }
+    const result = abdmService?.checkConnection
+      ? await abdmService.checkConnection()
+      : { ok: false, error: "ABDM service is unavailable." };
+    return reply.code(result.ok ? 200 : 503).send(result);
   });
 
   fastify.get("/api/admin/abha/review-queue", async (request, reply) => {
@@ -1330,6 +2076,8 @@ const registerPatientRoutes = (fastify, deps) => {
 
   fastify.post("/api/abha/request-verification", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
+    // Live ABDM verification deferred — ABDM sandbox registration pending.
+    return reply.code(503).send({ message: "ABHA verification with ABDM is coming soon. Your details are saved as self-reported." });
     const targetUserId = request.authUser.id;
     const existing = await get(
       `SELECT abha_number, abha_address, abha_status, abha_verified_at, abha_link_source
@@ -1372,11 +2120,43 @@ const registerPatientRoutes = (fastify, deps) => {
     }
 
     const createdAt = nowIso();
+    const abdmResult = abdmService
+      ? await abdmService.verifyAbhaIdentity({
+          abhaNumber: normalizedAbhaNumber,
+          abhaAddress: normalizedAbhaAddress,
+          patient: {
+            name: request.authUser.name || "",
+            email: request.authUser.email || "",
+          },
+        })
+      : {
+          status: "pending_verification",
+          source: "manual_review",
+          notes: "ABDM live verification is not configured. Verification is pending manual review.",
+          payload: {},
+        };
+    const resolvedStatus = String(abdmResult.status || "pending_verification").toLowerCase() === "verified"
+      ? "verified"
+      : "pending_verification";
+    const resolvedSource = abdmResult.source || (resolvedStatus === "verified" ? "abdm_verified" : "verification_requested");
+    const resolvedNotes = abdmResult.notes || (
+      resolvedStatus === "verified"
+        ? "ABHA details verified through ABDM."
+        : "Verification requested. Hospital team can review the ABHA details and complete ABDM linkage later."
+    );
     await run(
       `UPDATE profiles
        SET abha_status = ?, abha_verified_at = ?, abha_link_source = ?, abha_last_synced_at = ?, abha_last_error = ?, updated_at = ?
        WHERE user_id = ?`,
-      ["pending_verification", null, "verification_requested", null, null, createdAt, targetUserId],
+      [
+        resolvedStatus,
+        resolvedStatus === "verified" ? createdAt : null,
+        resolvedSource,
+        resolvedStatus === "verified" ? createdAt : null,
+        resolvedStatus === "verified" ? null : resolvedNotes,
+        createdAt,
+        targetUserId,
+      ],
     );
 
     await run(
@@ -1387,43 +2167,46 @@ const registerPatientRoutes = (fastify, deps) => {
         targetUserId,
         normalizedAbhaNumber || null,
         normalizedAbhaAddress || null,
-        "verification_requested",
-        "pending_verification",
-        "patient_portal",
-        "Verification requested. Hospital team can review the ABHA details and complete ABDM linkage later.",
+        resolvedStatus === "verified" ? "verification_completed" : "verification_requested",
+        resolvedStatus,
+        resolvedSource,
+        resolvedNotes,
         JSON.stringify({
           requestedBy: "patient",
+          abdm: abdmResult.payload || {},
         }),
         createdAt,
       ],
     );
 
-    const reviewers = await all(
-      `SELECT id
-       FROM users
-       WHERE role IN ('admin', 'front_desk')
-         AND active = 1`,
-      [],
-    );
-    await Promise.all(
-      reviewers.map((reviewer) =>
-        enqueueAndDeliverUserNotification
-          ? enqueueAndDeliverUserNotification({
-              userId: reviewer.id,
-              type: "abha_review",
-              title: "ABHA verification requested",
-              message: `${request.authUser.name || "A patient"} requested ABHA verification.`,
-              relatedId: targetUserId,
-              eventKey: `abha-request-${targetUserId}-${createdAt}-${reviewer.id}`,
-            })
-          : Promise.resolve(),
-      ),
-    );
+    if (resolvedStatus !== "verified") {
+      const reviewers = await all(
+        `SELECT id
+         FROM users
+         WHERE role IN ('admin', 'front_desk')
+           AND active = 1`,
+        [],
+      );
+      await Promise.all(
+        reviewers.map((reviewer) =>
+          enqueueAndDeliverUserNotification
+            ? enqueueAndDeliverUserNotification({
+                userId: reviewer.id,
+                type: "abha_review",
+                title: "ABHA verification requested",
+                message: `${request.authUser.name || "A patient"} requested ABHA verification.`,
+                relatedId: targetUserId,
+                eventKey: `abha-request-${targetUserId}-${createdAt}-${reviewer.id}`,
+              })
+            : Promise.resolve(),
+        ),
+      );
+    }
 
     const profile = await readPatientProfileByUserId(targetUserId);
     return {
       ok: true,
-      message: "ABHA verification request submitted.",
+      message: resolvedStatus === "verified" ? "ABHA verified." : "ABHA verification request submitted.",
       profile,
     };
   });
@@ -1504,7 +2287,7 @@ const registerPatientRoutes = (fastify, deps) => {
             userId: patientId,
             type: "abha_review",
             title: "ABHA verified",
-            message: "Your ABHA details were reviewed and marked verified.",
+            message: "Your ABHA details were reviewed and verified. Your health records can stay better connected now.",
             relatedId: patientId,
             eventKey: `abha-review-approve-${patientId}-${createdAt}`,
           })
@@ -1541,7 +2324,7 @@ const registerPatientRoutes = (fastify, deps) => {
             userId: patientId,
             type: "abha_review",
             title: "ABHA needs correction",
-            message: note || "Your ABHA details need correction before verification.",
+            message: note || "Your ABHA details need one small correction before verification can continue.",
             relatedId: patientId,
             eventKey: `abha-review-reject-${patientId}-${createdAt}`,
           })
@@ -1567,6 +2350,7 @@ const registerPatientRoutes = (fastify, deps) => {
       sex,
       conditions = [],
       allergies = [],
+      medications = [],
       region,
       phone = "",
       abhaNumber = "",
@@ -1585,7 +2369,7 @@ const registerPatientRoutes = (fastify, deps) => {
       country = "India",
       pinCode = "",
       registrationMode = "opd",
-      visitTime = "",
+      visitTime = "OPD",
       unitDepartmentId = null,
       unitDoctorId = null,
     } = request.body || {};
@@ -1632,7 +2416,7 @@ const registerPatientRoutes = (fastify, deps) => {
       });
     }
     const allowedVisitTypeCodes = await getAllowedVisitTypeCodes();
-    const normalizedVisitTime = hospitalSettingsService.normalizeVisitTypeCode(visitTime);
+    const normalizedVisitTime = hospitalSettingsService.normalizeVisitTypeCode(visitTime || "OPD");
     if (!allowedVisitTypeCodes.has(normalizedVisitTime)) {
       return reply.code(400).send({
         error: `visitTime must be one of: ${Array.from(allowedVisitTypeCodes).join(", ")}`,
@@ -1744,7 +2528,7 @@ const registerPatientRoutes = (fastify, deps) => {
     if (existing) {
       await run(
         `UPDATE profiles
-         SET age = ?, sex = ?, conditions = ?, allergies = ?, region = ?, phone = ?, address = ?, blood_group = ?, date_of_birth = ?,
+         SET age = ?, sex = ?, conditions = ?, allergies = ?, medications = ?, region = ?, phone = ?, address = ?, blood_group = ?, date_of_birth = ?,
              address_line_1 = ?, address_line_2 = ?, weight_kg = ?, height_cm = ?,
              abha_number = ?, abha_address = ?, abha_status = ?, abha_verified_at = ?, abha_link_source = ?, abha_last_synced_at = ?, abha_last_error = ?,
              emergency_contact_name = ?, emergency_contact_phone = ?, updated_at = ?
@@ -1754,6 +2538,7 @@ const registerPatientRoutes = (fastify, deps) => {
           sex || null,
           JSON.stringify(conditions),
           JSON.stringify(allergies),
+          JSON.stringify(medications),
           region || null,
           phone || null,
           resolvedAddress || null,
@@ -1779,17 +2564,18 @@ const registerPatientRoutes = (fastify, deps) => {
     } else {
       await run(
         `INSERT INTO profiles
-         (user_id, age, sex, conditions, allergies, region, phone, address, blood_group, date_of_birth,
+         (user_id, age, sex, conditions, allergies, medications, region, phone, address, blood_group, date_of_birth,
           address_line_1, address_line_2, weight_kg, height_cm,
           abha_number, abha_address, abha_status, abha_verified_at, abha_link_source, abha_last_synced_at, abha_last_error,
           emergency_contact_name, emergency_contact_phone, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
         [
           targetUserId,
           age || null,
           sex || null,
           JSON.stringify(conditions),
           JSON.stringify(allergies),
+          JSON.stringify(medications),
           region || null,
           phone || null,
           resolvedAddress || null,
@@ -2235,6 +3021,131 @@ const registerPatientRoutes = (fastify, deps) => {
     return { ok: true };
   });
 
+  fastify.get("/api/policies", async (request, reply) => {
+    return {
+      policyVersion: POLICY_VERSION,
+      support: {
+        email: supportEmail,
+        phone: supportPhone,
+        whatsapp: supportWhatsapp,
+      },
+      privacy: {
+        title: "Privacy and data use",
+        points: [
+          "SehatSaathi stores your account, reports, reminders, and care activity so the app can show your timeline and follow-up context.",
+          "Your uploaded files and extracted values are used only for your care workflow, support, safety review, and product reliability checks.",
+          "You can request a privacy export or delete your account data from inside the app.",
+        ],
+      },
+      terms: {
+        title: "Terms of use",
+        points: [
+          "SehatSaathi provides guided health support, report summaries, and continuity tools. It does not replace a licensed clinician.",
+          "You should review unclear extracted values before acting on them, especially when the app marks them for manual review.",
+          "For urgent symptoms, worsening illness, chest pain, breathing difficulty, uncontrolled bleeding, seizures, or suicidal thoughts, seek emergency care immediately.",
+        ],
+      },
+      safety: {
+        title: "Safety and consent",
+        points: [
+          "AI summaries and plans are support tools only. They do not diagnose disease or prescribe treatment.",
+          "Triage guidance is general health support and must not delay emergency or in-person care when red flags are present.",
+          "By continuing, the patient confirms they understand these limits and wants SehatSaathi to store the related consent log.",
+        ],
+      },
+    };
+  });
+
+  fastify.get("/api/support/requests", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const items = await all(
+      `SELECT id, category, subject, message, source_screen, severity, status, created_at, updated_at
+       FROM support_requests
+       WHERE user_id = ?
+       ORDER BY datetime(created_at) DESC, id DESC
+       LIMIT 20`,
+      [request.authUser.id],
+    );
+    return {
+      requests: items.map((item) => ({
+        id: item.id,
+        category: item.category,
+        subject: item.subject,
+        message: item.message,
+        sourceScreen: item.source_screen || "",
+        severity: item.severity || "normal",
+        status: item.status || "open",
+        createdAt: item.created_at,
+        updatedAt: item.updated_at,
+      })),
+    };
+  });
+
+  fastify.post("/api/support/requests", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const {
+      category = "general",
+      subject = "",
+      message = "",
+      sourceScreen = "",
+      severity = "normal",
+    } = request.body || {};
+    const normalizedSubject = String(subject || "").trim();
+    const normalizedMessage = String(message || "").trim();
+    const normalizedCategory = String(category || "general").trim().toLowerCase();
+    const normalizedSeverity = ["normal", "urgent"].includes(String(severity || "").trim().toLowerCase())
+      ? String(severity || "").trim().toLowerCase()
+      : "normal";
+
+    if (normalizedSubject.length < 4) {
+      return reply.code(400).send({ error: "Add a short subject so support can understand the issue." });
+    }
+    if (normalizedMessage.length < 10) {
+      return reply.code(400).send({ error: "Add a few more details so support can help." });
+    }
+
+    const createdAt = nowIso();
+    const result = await run(
+      `INSERT INTO support_requests
+       (user_id, category, subject, message, source_screen, severity, status, created_at, updated_at)
+       VALUES (?, ?, ?, ?, ?, ?, 'open', ?, ?)`,
+      [
+        request.authUser.id,
+        normalizedCategory,
+        normalizedSubject,
+        normalizedMessage,
+        String(sourceScreen || "").trim(),
+        normalizedSeverity,
+        createdAt,
+        createdAt,
+      ],
+    );
+    await enqueueAndDeliverUserNotification({
+      userId: request.authUser.id,
+      type: "support",
+      title: "Support request received",
+      message:
+        normalizedSeverity === "urgent"
+          ? "Your support request was received. If this is a medical emergency, seek immediate care right away."
+          : "Your support request was received. Our team can use this context to follow up more clearly when they review it.",
+      relatedId: result.lastID,
+      sourceEventKey: `support-request:${result.lastID}`,
+    });
+    return {
+      ok: true,
+      request: {
+        id: result.lastID,
+        category: normalizedCategory,
+        subject: normalizedSubject,
+        message: normalizedMessage,
+        sourceScreen: String(sourceScreen || "").trim(),
+        severity: normalizedSeverity,
+        status: "open",
+        createdAt,
+      },
+    };
+  });
+
   fastify.get("/api/privacy/export", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
     const userId = request.authUser.id;
@@ -2250,6 +3161,21 @@ const registerPatientRoutes = (fastify, deps) => {
     );
     const events = await all(
       "SELECT event_name, event_payload, created_at FROM analytics_events WHERE user_id = ? ORDER BY created_at DESC LIMIT 200",
+      [userId],
+    );
+    const supportRequests = await all(
+      "SELECT category, subject, message, source_screen, severity, status, created_at FROM support_requests WHERE user_id = ? ORDER BY created_at DESC",
+      [userId],
+    );
+    const records = await all(
+      "SELECT id, file_name, original_file_name, display_label, mimetype, source, source_label, created_at FROM medical_records WHERE user_id = ? ORDER BY created_at DESC",
+      [userId],
+    );
+    const abhaEvents = await all(
+      `SELECT abha_number, abha_address, action, status, source, notes, payload_json, created_at
+       FROM abha_link_events
+       WHERE user_id = ?
+       ORDER BY created_at DESC, id DESC`,
       [userId],
     );
     return {
@@ -2278,16 +3204,45 @@ const registerPatientRoutes = (fastify, deps) => {
         eventPayload: row.event_payload ? safeJsonParse(row.event_payload, null) : null,
         createdAt: row.created_at,
       })),
+      supportRequests: supportRequests.map((row) => ({
+        category: row.category,
+        subject: row.subject,
+        message: row.message,
+        sourceScreen: row.source_screen,
+        severity: row.severity,
+        status: row.status,
+        createdAt: row.created_at,
+      })),
+      medicalRecords: records.map((row) => ({
+        id: row.id,
+        fileName: row.file_name,
+        mimetype: row.mimetype || "",
+        createdAt: row.created_at,
+      })),
+      abhaHistory: abhaEvents.map((row) => ({
+        abhaNumber: row.abha_number || "",
+        abhaAddress: row.abha_address || "",
+        action: row.action,
+        status: row.status,
+        source: row.source || "",
+        notes: row.notes || "",
+        payload: row.payload_json ? safeJsonParse(row.payload_json, {}) : {},
+        createdAt: row.created_at,
+      })),
     };
   });
 
   fastify.delete("/api/privacy/me", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
     const userId = request.authUser.id;
+    await deleteAllPatientMedicalRecords(userId);
+    await run("DELETE FROM abha_link_events WHERE user_id = ?", [userId]);
+    await run("DELETE FROM patient_health_plan_activity WHERE plan_id IN (SELECT id FROM patient_health_plans WHERE user_id = ?)", [userId]);
+    await run("DELETE FROM patient_health_plans WHERE user_id = ?", [userId]);
+    await run("DELETE FROM auth_sessions WHERE user_id = ?", [userId]);
     await run("DELETE FROM share_access_logs WHERE user_id = ?", [userId]);
     await run("DELETE FROM emergency_cards WHERE user_id = ?", [userId]);
     await run("DELETE FROM doctor_ratings WHERE user_id = ?", [userId]);
-    await run("DELETE FROM medical_records WHERE user_id = ?", [userId]);
     await run("DELETE FROM family_members WHERE user_id = ?", [userId]);
     await run("DELETE FROM share_passes WHERE user_id = ?", [userId]);
     await run("DELETE FROM ward_listing WHERE patient_id = ?", [userId]);
@@ -2302,9 +3257,68 @@ const registerPatientRoutes = (fastify, deps) => {
     await run("DELETE FROM triage_logs WHERE user_id = ?", [userId]);
     await run("DELETE FROM consent_logs WHERE user_id = ?", [userId]);
     await run("DELETE FROM analytics_events WHERE user_id = ?", [userId]);
+    await run("DELETE FROM support_requests WHERE user_id = ?", [userId]);
     await run("DELETE FROM profiles WHERE user_id = ?", [userId]);
     await run("DELETE FROM users WHERE id = ?", [userId]);
     return { ok: true };
+  });
+
+  /* ── Retention summary — streak, retest countdown, improvement ── */
+  fastify.get("/api/retention-summary", async (request, reply) => {
+    if (!requireAuth(request, reply)) return;
+    const userId = request.authUser.id;
+    const memberId = request.query?.memberId ? Number(request.query.memberId) : null;
+    const scopeKey = buildScopeKey(memberId);
+
+    // Consecutive check-in streak: count backwards from today
+    const checkinDays = await all(
+      `SELECT DISTINCT DATE(a.logged_at) AS day
+       FROM patient_health_plan_activity a
+       JOIN patient_health_plans p ON p.id = a.plan_id
+       WHERE p.user_id = ? AND p.scope_key = ? AND a.tracker_key = 'checkin'
+         AND a.logged_at >= datetime('now', '-90 days')
+       ORDER BY day DESC`,
+      [userId, scopeKey]
+    );
+
+    let streak = 0;
+    const today = new Date();
+    today.setHours(0, 0, 0, 0);
+    for (let i = 0; i < checkinDays.length; i++) {
+      const expected = new Date(today);
+      expected.setDate(today.getDate() - i);
+      const dayStr = expected.toISOString().slice(0, 10);
+      if (checkinDays[i]?.day === dayStr) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+
+    // Total check-ins last 30 days
+    const recentRow = await get(
+      `SELECT COUNT(DISTINCT DATE(a.logged_at)) AS days_active
+       FROM patient_health_plan_activity a
+       JOIN patient_health_plans p ON p.id = a.plan_id
+       WHERE p.user_id = ? AND p.scope_key = ? AND a.tracker_key = 'checkin'
+         AND a.logged_at >= datetime('now', '-30 days')`,
+      [userId, scopeKey]
+    );
+    const daysActive30 = Number(recentRow?.days_active || 0);
+
+    // Latest report date
+    const latestReport = await get(
+      `SELECT created_at FROM lab_records WHERE user_id = ? AND COALESCE(member_id,0)=COALESCE(?,0)
+       ORDER BY created_at DESC LIMIT 1`,
+      [userId, memberId || 0]
+    );
+    const latestReportDate = latestReport?.created_at || null;
+
+    return reply.send({
+      streak,
+      daysActive30,
+      latestReportDate,
+    });
   });
 };
 

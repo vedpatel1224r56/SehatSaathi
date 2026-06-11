@@ -386,7 +386,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
     const message =
       audience === "doctor"
         ? `Upcoming appointment #${appointment.id} is scheduled for ${scheduledAt.toLocaleString()}.`
-        : `Reminder: your appointment #${appointment.id} is scheduled for ${scheduledAt.toLocaleString()}.`;
+        : `Your appointment #${appointment.id} is scheduled for ${scheduledAt.toLocaleString()}. Keeping your reports ready can make the visit easier.`;
     await enqueueAndDeliverUserNotification({
       userId: Number(recipientUserId),
       type: "appointment_reminder",
@@ -408,7 +408,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
     const message =
       audience === "doctor"
         ? `Upcoming ${String(consult.mode || "remote").toUpperCase()} consult #${consult.id} is scheduled for ${scheduledAt.toLocaleString()}.`
-        : `Reminder: your ${String(consult.mode || "remote").toUpperCase()} consult #${consult.id} is scheduled for ${scheduledAt.toLocaleString()}.`;
+        : `Your ${String(consult.mode || "remote").toUpperCase()} consult #${consult.id} is scheduled for ${scheduledAt.toLocaleString()}. Keeping your summary nearby can make it easier to begin.`;
     await enqueueAndDeliverUserNotification({
       userId: Number(recipientUserId),
       type: "appointment_reminder",
@@ -573,7 +573,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
       userId: Number(request.authUser.id),
       type: "appointment_status",
       title: "Remote consult request received",
-      message: `Your ${String(mode).toUpperCase()} consult request #${result.lastID} has been submitted.`,
+      message: `Your ${String(mode).toUpperCase()} consult request has been received. We’ll keep the details ready here for your next step.`,
       relatedId: result.lastID,
       eventKey: `teleconsult:${result.lastID}:created:patient`,
     });
@@ -916,7 +916,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
         userId: Number(consult.user_id),
         type: "appointment_status",
         title: "Remote consult update",
-        message: `Your remote consult #${consultId} was ${statusLabel}.`,
+        message: `Your remote consult is now ${statusLabel}. Review the latest status when you have a quiet moment.`,
         relatedId: consultId,
         eventKey: `teleconsult:${consultId}:status:patient:${normalizedStatus}`,
       });
@@ -1237,7 +1237,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
         userId: Number(consult.user_id),
         type: "appointment_status",
         title: `${consultMode === "video" ? "Video" : "Audio"} consult started`,
-        message: `Your ${consultMode === "video" ? "video" : "audio"} consult #${consultId} has started. Open the consult room to join now.`,
+        message: `Your ${consultMode === "video" ? "video" : "audio"} consult has started. Open the consult room when you’re ready to join.`,
         relatedId: consultId,
         eventKey: `teleconsult:${consultId}:${consultMode}_offer:patient:${result.lastID}`,
       });
@@ -1510,7 +1510,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
           userId: Number(request.authUser.id),
           type: "appointment_status",
           title: "Appointment request received",
-          message: `Your appointment request #${result.lastID} with ${appointment.doctor_name ? `Dr. ${appointment.doctor_name}` : "the doctor"} has been submitted.`,
+          message: `Your appointment request with ${appointment.doctor_name ? `Dr. ${appointment.doctor_name}` : "the doctor"} has been received. We’ll keep the details ready here for your next step.`,
           relatedId: result.lastID,
           eventKey: `appointment:${result.lastID}:created:patient`,
         });
@@ -1674,7 +1674,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
       userId: Number(request.authUser.id),
       type: "appointment_status",
       title: "Appointment request received",
-      message: `Your appointment request #${result.lastID} with ${appointment.doctor_name ? `Dr. ${appointment.doctor_name}` : "the doctor"} has been submitted.`,
+      message: `Your appointment request #${result.lastID} with ${appointment.doctor_name ? `Dr. ${appointment.doctor_name}` : "the doctor"} has been submitted. We’ll keep the details ready here.`,
       relatedId: result.lastID,
       eventKey: `appointment:${result.lastID}:created:patient`,
     });
@@ -1844,7 +1844,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
       userId: Number(appointment.user_id),
       type: "appointment_status",
       title: "Appointment rescheduled",
-      message: `Your appointment #${appointmentId} has been moved to ${nextDate.toLocaleString()}.`,
+      message: `Your appointment has been moved to ${nextDate.toLocaleString()}. Your plan and reports are still ready for that visit.`,
       relatedId: appointmentId,
       eventKey: `appointment:${appointmentId}:rescheduled:${nextDate.toISOString()}`,
     });
@@ -1933,7 +1933,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
         userId: Number(appointment.user_id),
         type: "appointment_status",
         title: "Appointment update",
-        message: `Your appointment #${appointmentId} was ${statusLabelMap[nextStatus] || nextStatus}.`,
+        message: `Your appointment was ${statusLabelMap[nextStatus] || nextStatus}. You can review the latest update whenever convenient.`,
         relatedId: appointmentId,
         eventKey: `appointment:${appointmentId}:status:${currentStatus}->${nextStatus}`,
       });
@@ -2071,7 +2071,7 @@ const registerAppointmentRoutes = (fastify, deps) => {
         userId: Number(appointment.user_id),
         type: "appointment_status",
         title: "Appointment updated",
-        message: `Your appointment #${appointmentId} was updated (${changes.join(", ")}).`,
+        message: `Your appointment details were updated (${changes.join(", ")}). Everything stays ready in one place here.`,
         relatedId: appointmentId,
         eventKey: `appointment:${appointmentId}:admin-update:${currentStatus}->${nextStatus}:${nextDoctorId}:${nextDepartmentId}:${nextScheduledAt.toISOString()}`,
       });

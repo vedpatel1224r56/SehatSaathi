@@ -575,7 +575,7 @@ const registerAdminRoutes = (fastify, deps) => {
     const rows = await all(
       `SELECT u.id, u.patient_uid, u.registration_mode, u.name, u.email, u.active, u.created_at,
               p.age, p.sex, p.region, p.conditions, p.allergies, p.date_of_birth,
-              p.phone, p.address, p.address_line_1, p.address_line_2, p.weight_kg, p.height_cm, p.blood_group, p.emergency_contact_name, p.emergency_contact_phone,
+              p.phone, p.abha_number, p.address, p.address_line_1, p.address_line_2, p.weight_kg, p.height_cm, p.blood_group, p.emergency_contact_name, p.emergency_contact_phone,
               pr.first_name, pr.middle_name, pr.last_name, pr.aadhaar_no, pr.marital_status, pr.referred_by,
               pr.visit_time, pr.unit_department_id, pr.unit_department_name, pr.unit_doctor_id, pr.unit_doctor_name,
               pr.taluka, pr.district, pr.city, pr.state, pr.country, pr.pin_code
@@ -587,10 +587,12 @@ const registerAdminRoutes = (fastify, deps) => {
            lower(u.name) LIKE ?
            OR lower(u.email) LIKE ?
            OR lower(COALESCE(u.patient_uid, '')) LIKE ?
+           OR lower(COALESCE(p.phone, '')) LIKE ?
+           OR lower(COALESCE(p.abha_number, '')) LIKE ?
          )
        ORDER BY u.created_at DESC, u.id DESC
        LIMIT 100`,
-      [search, search, search],
+      [search, search, search, search, search],
     );
     const splitName = (fullName) => {
       const parts = String(fullName || "").trim().split(/\s+/).filter(Boolean);

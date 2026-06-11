@@ -187,6 +187,21 @@ const createInitDb = (deps) => {
     );
   });
 
+  await applyMigration("2026-06-phone-otps", async () => {
+    await run(
+      `CREATE TABLE IF NOT EXISTS phone_login_otps (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        phone TEXT NOT NULL,
+        otp_hash TEXT NOT NULL,
+        expires_at TEXT NOT NULL,
+        used_at TEXT,
+        created_at TEXT NOT NULL
+      )`,
+    );
+    // Also add phone column to users if not present
+    try { await run("ALTER TABLE users ADD COLUMN phone TEXT"); } catch {}
+  });
+
   await applyMigration("2026-03-idempotency-keys", async () => {
     await run(
       `CREATE TABLE IF NOT EXISTS idempotency_keys (
@@ -247,6 +262,40 @@ const createInitDb = (deps) => {
   await run(
     `CREATE INDEX IF NOT EXISTS idx_notification_outbox_pending
      ON notification_outbox(status, next_attempt_at, created_at)`,
+  );
+  await run(
+    `CREATE TABLE IF NOT EXISTS patient_notification_preferences (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL UNIQUE,
+      daily_reminder_time TEXT NOT NULL DEFAULT '08:00',
+      plan_reminders INTEGER NOT NULL DEFAULT 1,
+      followup_nudges INTEGER NOT NULL DEFAULT 1,
+      visit_reminders INTEGER NOT NULL DEFAULT 1,
+      lab_reminders INTEGER NOT NULL DEFAULT 1,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`,
+  );
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS support_requests (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      category TEXT NOT NULL,
+      subject TEXT NOT NULL,
+      message TEXT NOT NULL,
+      source_screen TEXT,
+      severity TEXT NOT NULL DEFAULT 'normal',
+      status TEXT NOT NULL DEFAULT 'open',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`,
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_support_requests_user_created
+     ON support_requests(user_id, created_at DESC)`,
   );
 
   const createdAt = nowIso();
@@ -473,13 +522,34 @@ const createInitDb = (deps) => {
     "ALTER TABLE pharmacy_partners ADD COLUMN price_last_updated_at TEXT",
   );
 
-  const seededLabs = await get("SELECT COUNT(*) AS count FROM lab_packages");
-  if ((seededLabs?.count || 0) === 0) {
+  const demoLabPartners = ["RedCheck Diagnostics", "Niramaya Labs", "MetroLab Express"];
+  const savitaAreaLabPartners = [
+    "Om Imaging Centre",
+    "Sterling Accuris Pathology Lab",
+    "Wellbeing Healthcare",
+    "Thyrocare Lab",
+    "Unipath Specialty Laboratory",
+  ];
+  await run(
+    "UPDATE lab_packages SET active = 0 WHERE partner_name IN (?, ?, ?)",
+    demoLabPartners,
+  );
+  await run(
+    "UPDATE lab_tests SET active = 0 WHERE partner_name IN (?, ?, ?)",
+    demoLabPartners,
+  );
+
+  const savitaSeededPackages = await get(
+    "SELECT COUNT(*) AS count FROM lab_packages WHERE partner_name IN (?, ?, ?, ?, ?)",
+    savitaAreaLabPartners,
+  );
+  if ((savitaSeededPackages?.count || 0) === 0) {
     const labRows = [
-      ["RedCheck Diagnostics", "CBC + ESR", 399, 549, 1, 90, 120, 2.4, "Alkapuri"],
-      ["RedCheck Diagnostics", "Diabetes Screening", 699, 849, 1, 120, 150, 2.4, "Alkapuri"],
-      ["Niramaya Labs", "Full Body Basic", 1499, 1799, 1, 180, 240, 4.1, "Karelibaug"],
-      ["MetroLab Express", "Liver Function Test", 899, null, 0, 75, 110, 1.8, "Fatehgunj"],
+      ["Om Imaging Centre", "Imaging and diagnostic review", 0, null, 0, 45, 90, 0.4, "Parivar Char Rasta, near Savita Hospital"],
+      ["Sterling Accuris Pathology Lab", "Diabetes and lipid retest panel", 0, 0, 1, 60, 120, 0.9, "Dax Plaza, near Zaver Nagar Bus Stop"],
+      ["Wellbeing Healthcare", "Basic health retest package", 0, 0, 1, 70, 130, 0.6, "FF 11 Kanha Luxria, Savita Hospital Road"],
+      ["Thyrocare Lab", "Thyroid and metabolic retest package", 0, 0, 1, 90, 150, 1.87, "Old Pancham Party Plot, Ajwa Road"],
+      ["Unipath Specialty Laboratory", "CBC and chronic-care retest panel", 0, 0, 1, 75, 135, 1.2, "Uday Clinic, opposite Suryanagar Bus Stand"],
     ];
     for (const row of labRows) {
       await run(
@@ -491,16 +561,23 @@ const createInitDb = (deps) => {
     }
   }
 
-  const seededLabTests = await get("SELECT COUNT(*) AS count FROM lab_tests");
-  if ((seededLabTests?.count || 0) === 0) {
+  const savitaSeededTests = await get(
+    "SELECT COUNT(*) AS count FROM lab_tests WHERE partner_name IN (?, ?, ?, ?, ?)",
+    savitaAreaLabPartners,
+  );
+  if ((savitaSeededTests?.count || 0) === 0) {
     const testRows = [
-      ["RedCheck Diagnostics", "CBC", 249, 349, 1, 90, 120, 2.4, "Alkapuri"],
-      ["RedCheck Diagnostics", "ESR", 199, 299, 1, 90, 120, 2.4, "Alkapuri"],
-      ["RedCheck Diagnostics", "HbA1c", 499, 649, 1, 95, 125, 2.4, "Alkapuri"],
-      ["Niramaya Labs", "Thyroid Profile (T3, T4, TSH)", 699, 849, 1, 130, 170, 4.1, "Karelibaug"],
-      ["Niramaya Labs", "Vitamin D", 899, 1099, 1, 140, 180, 4.1, "Karelibaug"],
-      ["MetroLab Express", "Lipid Profile", 799, null, 0, 75, 110, 1.8, "Fatehgunj"],
-      ["MetroLab Express", "LFT", 899, null, 0, 75, 110, 1.8, "Fatehgunj"],
+      ["Om Imaging Centre", "Ultrasound / imaging enquiry", 0, null, 0, 45, 90, 0.4, "Parivar Char Rasta, near Savita Hospital"],
+      ["Sterling Accuris Pathology Lab", "HbA1c", 0, 0, 1, 60, 120, 0.9, "Dax Plaza, near Zaver Nagar Bus Stop"],
+      ["Sterling Accuris Pathology Lab", "Lipid Profile", 0, 0, 1, 60, 120, 0.9, "Dax Plaza, near Zaver Nagar Bus Stop"],
+      ["Sterling Accuris Pathology Lab", "CBC", 0, 0, 1, 60, 120, 0.9, "Dax Plaza, near Zaver Nagar Bus Stop"],
+      ["Wellbeing Healthcare", "Blood sugar fasting / PP", 0, 0, 1, 70, 130, 0.6, "FF 11 Kanha Luxria, Savita Hospital Road"],
+      ["Wellbeing Healthcare", "Vitamin D", 0, 0, 1, 70, 130, 0.6, "FF 11 Kanha Luxria, Savita Hospital Road"],
+      ["Thyrocare Lab", "Thyroid Profile (T3, T4, TSH)", 0, 0, 1, 90, 150, 1.87, "Old Pancham Party Plot, Ajwa Road"],
+      ["Thyrocare Lab", "HbA1c", 0, 0, 1, 90, 150, 1.87, "Old Pancham Party Plot, Ajwa Road"],
+      ["Unipath Specialty Laboratory", "CBC", 0, 0, 1, 75, 135, 1.2, "Uday Clinic, opposite Suryanagar Bus Stand"],
+      ["Unipath Specialty Laboratory", "Liver Function Test", 0, 0, 1, 75, 135, 1.2, "Uday Clinic, opposite Suryanagar Bus Stand"],
+      ["Unipath Specialty Laboratory", "Kidney Function Test", 0, 0, 1, 75, 135, 1.2, "Uday Clinic, opposite Suryanagar Bus Stand"],
     ];
     for (const row of testRows) {
       await run(
@@ -709,6 +786,7 @@ const createInitDb = (deps) => {
   await ensureColumn("profiles", "address_line_1", "ALTER TABLE profiles ADD COLUMN address_line_1 TEXT");
   await ensureColumn("profiles", "address_line_2", "ALTER TABLE profiles ADD COLUMN address_line_2 TEXT");
   await ensureColumn("profiles", "blood_group", "ALTER TABLE profiles ADD COLUMN blood_group TEXT");
+  await ensureColumn("profiles", "medications", "ALTER TABLE profiles ADD COLUMN medications TEXT");
   await ensureColumn("profiles", "date_of_birth", "ALTER TABLE profiles ADD COLUMN date_of_birth TEXT");
   await ensureColumn("profiles", "weight_kg", "ALTER TABLE profiles ADD COLUMN weight_kg REAL");
   await ensureColumn("profiles", "height_cm", "ALTER TABLE profiles ADD COLUMN height_cm REAL");
@@ -1209,6 +1287,41 @@ const createInitDb = (deps) => {
       FOREIGN KEY(user_id) REFERENCES users(id)
     )`,
   );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_analytics_events_name_created
+     ON analytics_events(event_name, created_at DESC)`,
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_analytics_events_user_created
+     ON analytics_events(user_id, created_at DESC)`,
+  );
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS pilot_interest_leads (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      name TEXT NOT NULL,
+      organization TEXT NOT NULL,
+      phone TEXT NOT NULL,
+      email TEXT,
+      city TEXT NOT NULL,
+      organization_type TEXT NOT NULL,
+      monthly_reports INTEGER NOT NULL DEFAULT 0,
+      message TEXT,
+      source TEXT,
+      campaign TEXT,
+      status TEXT NOT NULL DEFAULT 'new',
+      consent_at TEXT NOT NULL,
+      created_at TEXT NOT NULL
+    )`,
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_pilot_interest_leads_created
+     ON pilot_interest_leads(created_at DESC)`,
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_pilot_interest_leads_status
+     ON pilot_interest_leads(status, created_at DESC)`,
+  );
 
   await run(
     `CREATE TABLE IF NOT EXISTS pilot_metrics_daily (
@@ -1247,6 +1360,54 @@ const createInitDb = (deps) => {
   await ensureColumn("error_logs", "request_id", "ALTER TABLE error_logs ADD COLUMN request_id TEXT");
 
   await run(
+    `CREATE TABLE IF NOT EXISTS client_error_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER,
+      request_id TEXT,
+      fingerprint TEXT NOT NULL,
+      source TEXT NOT NULL,
+      severity TEXT NOT NULL DEFAULT 'error',
+      message TEXT NOT NULL,
+      stack TEXT,
+      component_stack TEXT,
+      url TEXT,
+      user_agent TEXT,
+      metadata_json TEXT,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`,
+  );
+  await ensureColumn(
+    "client_error_logs",
+    "request_id",
+    "ALTER TABLE client_error_logs ADD COLUMN request_id TEXT",
+  );
+  await ensureColumn(
+    "client_error_logs",
+    "component_stack",
+    "ALTER TABLE client_error_logs ADD COLUMN component_stack TEXT",
+  );
+  await ensureColumn(
+    "client_error_logs",
+    "url",
+    "ALTER TABLE client_error_logs ADD COLUMN url TEXT",
+  );
+  await ensureColumn(
+    "client_error_logs",
+    "user_agent",
+    "ALTER TABLE client_error_logs ADD COLUMN user_agent TEXT",
+  );
+  await ensureColumn(
+    "client_error_logs",
+    "metadata_json",
+    "ALTER TABLE client_error_logs ADD COLUMN metadata_json TEXT",
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_client_error_logs_recent
+     ON client_error_logs(fingerprint, created_at DESC)`,
+  );
+
+  await run(
     `CREATE TABLE IF NOT EXISTS doctor_ratings (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       share_code TEXT NOT NULL,
@@ -1282,9 +1443,38 @@ const createInitDb = (deps) => {
       file_name TEXT NOT NULL,
       file_path TEXT NOT NULL,
       mimetype TEXT,
+      source TEXT NOT NULL DEFAULT 'patient_upload',
+      source_label TEXT,
+      uploaded_by_user_id INTEGER,
       created_at TEXT NOT NULL,
-      FOREIGN KEY(user_id) REFERENCES users(id)
+      FOREIGN KEY(user_id) REFERENCES users(id),
+      FOREIGN KEY(uploaded_by_user_id) REFERENCES users(id)
     )`,
+  );
+  await ensureColumn(
+    "medical_records",
+    "source",
+    "ALTER TABLE medical_records ADD COLUMN source TEXT NOT NULL DEFAULT 'patient_upload'",
+  );
+  await ensureColumn(
+    "medical_records",
+    "source_label",
+    "ALTER TABLE medical_records ADD COLUMN source_label TEXT",
+  );
+  await ensureColumn(
+    "medical_records",
+    "uploaded_by_user_id",
+    "ALTER TABLE medical_records ADD COLUMN uploaded_by_user_id INTEGER",
+  );
+  await ensureColumn(
+    "medical_records",
+    "original_file_name",
+    "ALTER TABLE medical_records ADD COLUMN original_file_name TEXT",
+  );
+  await ensureColumn(
+    "medical_records",
+    "display_label",
+    "ALTER TABLE medical_records ADD COLUMN display_label TEXT",
   );
 
   await run(
@@ -1322,6 +1512,46 @@ const createInitDb = (deps) => {
     "medical_record_metrics",
     "confidence",
     "ALTER TABLE medical_record_metrics ADD COLUMN confidence REAL",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_metric_label",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_metric_label TEXT",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_unit",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_unit TEXT",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_reference_low",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_reference_low REAL",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_reference_high",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_reference_high REAL",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_reference_text",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_reference_text TEXT",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "interpretation_band",
+    "ALTER TABLE medical_record_metrics ADD COLUMN interpretation_band TEXT",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "original_value_text",
+    "ALTER TABLE medical_record_metrics ADD COLUMN original_value_text TEXT",
+  );
+  await ensureColumn(
+    "medical_record_metrics",
+    "normalized_value_text",
+    "ALTER TABLE medical_record_metrics ADD COLUMN normalized_value_text TEXT",
   );
 
   await run(
@@ -1428,6 +1658,111 @@ const createInitDb = (deps) => {
     "medical_record_section_metrics",
     "confidence",
     "ALTER TABLE medical_record_section_metrics ADD COLUMN confidence REAL",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_metric_label",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_metric_label TEXT",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_unit",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_unit TEXT",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_reference_low",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_reference_low REAL",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_reference_high",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_reference_high REAL",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_reference_text",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_reference_text TEXT",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "interpretation_band",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN interpretation_band TEXT",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "original_value_text",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN original_value_text TEXT",
+  );
+  await ensureColumn(
+    "medical_record_section_metrics",
+    "normalized_value_text",
+    "ALTER TABLE medical_record_section_metrics ADD COLUMN normalized_value_text TEXT",
+  );
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS patient_health_plans (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      user_id INTEGER NOT NULL,
+      member_id INTEGER,
+      scope_key TEXT NOT NULL,
+      focus_key TEXT NOT NULL,
+      title TEXT NOT NULL,
+      subtitle TEXT,
+      goal TEXT,
+      focus_title TEXT,
+      focus_summary TEXT,
+      progress_json TEXT NOT NULL DEFAULT '{}',
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`,
+  );
+  await run(
+    `CREATE UNIQUE INDEX IF NOT EXISTS idx_patient_health_plans_scope_focus
+     ON patient_health_plans(user_id, scope_key, focus_key)`,
+  );
+  await ensureColumn(
+    "patient_health_plans",
+    "plan_source",
+    "ALTER TABLE patient_health_plans ADD COLUMN plan_source TEXT NOT NULL DEFAULT 'ai'",
+  );
+  await ensureColumn(
+    "patient_health_plans",
+    "doctor_notes",
+    "ALTER TABLE patient_health_plans ADD COLUMN doctor_notes TEXT",
+  );
+  await ensureColumn(
+    "patient_health_plans",
+    "doctor_updated_at",
+    "ALTER TABLE patient_health_plans ADD COLUMN doctor_updated_at TEXT",
+  );
+  await ensureColumn(
+    "patient_health_plans",
+    "doctor_user_id",
+    "ALTER TABLE patient_health_plans ADD COLUMN doctor_user_id INTEGER",
+  );
+  await ensureColumn(
+    "patient_health_plans",
+    "doctor_override_json",
+    "ALTER TABLE patient_health_plans ADD COLUMN doctor_override_json TEXT",
+  );
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS patient_health_plan_activity (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      plan_id INTEGER NOT NULL,
+      user_id INTEGER NOT NULL,
+      member_id INTEGER,
+      tracker_key TEXT NOT NULL,
+      label TEXT NOT NULL,
+      value_text TEXT NOT NULL,
+      unit TEXT,
+      logged_at TEXT NOT NULL,
+      created_at TEXT NOT NULL,
+      FOREIGN KEY(plan_id) REFERENCES patient_health_plans(id),
+      FOREIGN KEY(user_id) REFERENCES users(id)
+    )`,
   );
 
   await run(
@@ -1671,6 +2006,42 @@ const createInitDb = (deps) => {
       FOREIGN KEY(user_id) REFERENCES users(id),
       FOREIGN KEY(doctor_id) REFERENCES users(id)
     )`,
+  );
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS guest_reports (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      guest_token_hash TEXT NOT NULL UNIQUE,
+      file_path TEXT,
+      file_name TEXT,
+      mimetype TEXT,
+      extracted_text TEXT,
+      sections_json TEXT,
+      insights_json TEXT,
+      status TEXT NOT NULL DEFAULT 'processing',
+      expires_at TEXT NOT NULL,
+      claimed_user_id INTEGER,
+      claim_phone TEXT,
+      created_at TEXT NOT NULL,
+      updated_at TEXT NOT NULL,
+      FOREIGN KEY(claimed_user_id) REFERENCES users(id)
+    )`,
+  );
+  await ensureColumn("guest_reports", "claim_phone", "ALTER TABLE guest_reports ADD COLUMN claim_phone TEXT");
+
+  await run(
+    `CREATE TABLE IF NOT EXISTS guest_consent_logs (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      consent_type TEXT NOT NULL,
+      policy_version TEXT NOT NULL,
+      ip TEXT,
+      user_agent TEXT,
+      created_at TEXT NOT NULL
+    )`,
+  );
+  await run(
+    `CREATE INDEX IF NOT EXISTS idx_guest_consent_logs_created
+     ON guest_consent_logs(created_at DESC)`,
   );
   };
 };

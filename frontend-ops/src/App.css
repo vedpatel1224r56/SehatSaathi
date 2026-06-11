@@ -23,12 +23,17 @@
   width: 44px;
   height: 44px;
   border-radius: 14px;
-  background: linear-gradient(135deg, #2b6f64, #2f3f2e);
-  color: #fff;
+  overflow: hidden;
+  background: transparent;
   display: grid;
   place-items: center;
-  font-weight: 700;
-  font-family: "Space Grotesk", sans-serif;
+}
+
+.logo-mark img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .brand-title {
@@ -1226,15 +1231,18 @@
   width: 60px;
   height: 60px;
   border-radius: 18px;
+  overflow: hidden;
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  background: linear-gradient(180deg, #295b54 0%, #21483f 100%);
-  color: #fff;
-  font-size: 2rem;
-  font-weight: 800;
-  line-height: 1;
   flex: 0 0 auto;
+}
+
+.logo-chip img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  display: block;
 }
 
 .topbar-brand h1 {
@@ -3659,6 +3667,416 @@
 
 .compact-list {
   gap: 0.8rem;
+}
+
+.lab-dropzone {
+  margin-top: 12px;
+  border: 1px dashed #c8d7e6;
+  border-radius: 20px;
+  padding: 18px;
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.82), rgba(245, 249, 253, 0.9));
+  transition: border-color 0.2s ease, background 0.2s ease, transform 0.2s ease;
+}
+
+.lab-dropzone.is-active {
+  border-color: #2a6c92;
+  background: linear-gradient(180deg, rgba(232, 244, 252, 0.92), rgba(241, 248, 252, 0.94));
+  transform: translateY(-1px);
+}
+
+.ops-hero.lab-shell-hero {
+  background: linear-gradient(180deg, #ffffff 0%, #f7fbfb 100%);
+  border: 1px solid rgba(208, 221, 227, 0.9);
+  color: #13283d;
+  box-shadow: 0 18px 42px rgba(18, 53, 81, 0.08);
+  margin: 0 0 10px;
+  padding: 16px 22px;
+}
+
+.ops-hero.lab-shell-hero .panel-sub,
+.ops-hero.lab-shell-hero .eyebrow,
+.ops-hero.lab-shell-hero .micro {
+  color: #4d6476;
+}
+
+.ops-hero.lab-shell-hero .ops-hero-highlight-pill {
+  background: #f4faf9;
+  border-color: #d7eae6;
+  color: #1f5d58;
+}
+
+.ops-hero.lab-shell-hero .hero-mini-card {
+  background: #fbfefe;
+  border-color: #dce8ec;
+  box-shadow: none;
+}
+
+.ops-hero.lab-shell-hero .hero-mini-card strong,
+.ops-hero.lab-shell-hero .mini-label {
+  color: #17314c;
+}
+
+.lab-hero-support {
+  margin-top: 8px;
+}
+
+.lab-page {
+  display: grid;
+  gap: 10px;
+}
+
+.lab-workspace-head {
+  display: grid;
+  gap: 4px;
+}
+
+.lab-workspace-head h2 {
+  margin: 0 0 2px;
+  color: #13283d;
+  font-family: "Fraunces", serif;
+  font-size: clamp(1.2rem, 1.65vw, 1.6rem);
+  line-height: 1.08;
+  max-width: 760px;
+}
+
+.lab-workspace-head .panel-sub {
+  margin: 0;
+}
+
+.lab-tab-row,
+.lab-upload-actions,
+.lab-upload-footer {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+}
+
+.lab-analytics-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 14px;
+}
+
+.lab-main-layout {
+  display: grid;
+  grid-template-columns: minmax(0, 1.45fr) minmax(320px, 0.62fr);
+  gap: 16px;
+  align-items: start;
+}
+
+.lab-main-column,
+.lab-side-column,
+.lab-stack,
+.lab-patient-detail-stack,
+.lab-activity-list {
+  display: grid;
+  gap: 12px;
+}
+
+.lab-card,
+.lab-stat-card,
+.lab-empty-state,
+.lab-result-card,
+.lab-file-row,
+.lab-activity-row,
+.lab-patient-fact,
+.lab-patient-upload-row,
+.lab-success-banner,
+.lab-modal-card {
+  border: 1px solid #dbe5ee;
+  background: #fff;
+  border-radius: 22px;
+  box-shadow: 0 14px 34px rgba(18, 53, 81, 0.06);
+}
+
+.lab-card,
+.lab-stat-card,
+.lab-modal-card {
+  padding: 14px;
+}
+
+.lab-card-head h3 {
+  margin: 2px 0 2px;
+  color: #17314c;
+}
+
+.lab-tab {
+  min-height: 44px;
+  padding: 0 16px;
+  border-radius: 14px;
+  border: 1px solid #d9e2ea;
+  background: #f3f5f7;
+  color: #526474;
+  font-weight: 700;
+  cursor: pointer;
+  transition: background 0.18s ease, border-color 0.18s ease, color 0.18s ease;
+}
+
+.lab-tab:hover {
+  background: #e8edef;
+  border-color: #cfd8df;
+  color: #314657;
+}
+
+.lab-tab.active {
+  background: #157a6c;
+  border-color: #157a6c;
+  color: #fff;
+}
+
+.lab-tab.active:hover {
+  background: #11695d;
+  border-color: #11695d;
+  color: #fff;
+}
+
+.lab-search-bar {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+}
+
+.lab-search-bar input,
+.lab-modal-body input {
+  min-height: 48px;
+  border-radius: 14px;
+  border: 1px solid #d8e3ec;
+  background: #fff;
+  padding: 0 14px;
+  font-family: "Space Grotesk", sans-serif;
+  color: #13283d;
+}
+
+.lab-search-bar .primary,
+.lab-upload-actions .primary,
+.lab-upload-footer .primary,
+.lab-upload-footer .secondary {
+  min-height: 48px;
+  padding: 0 18px;
+}
+
+.lab-search-helper {
+  margin: 0;
+  color: #627586;
+}
+
+.lab-empty-state {
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  background: #fafdfd;
+}
+
+.lab-empty-state.large {
+  min-height: 88px;
+  padding: 10px 12px;
+  align-content: center;
+  border-radius: 16px;
+}
+
+.lab-result-list,
+.lab-file-list {
+  display: grid;
+  gap: 10px;
+}
+
+.lab-selected-inline {
+  margin: -2px 0 0;
+  color: #1b405d;
+  font-size: 0.9rem;
+  font-weight: 700;
+}
+
+.lab-result-card,
+.lab-file-row,
+.lab-activity-row,
+.lab-patient-upload-row {
+  padding: 14px 16px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lab-result-card > div,
+.lab-activity-row,
+.lab-patient-upload-row {
+  display: grid;
+  gap: 4px;
+}
+
+.lab-upload-box {
+  border-radius: 24px;
+  padding: 17px;
+  border: 1px dashed #bfd4dc;
+  background: linear-gradient(180deg, #fbfefe 0%, #f6fbfd 100%);
+  display: grid;
+  gap: 10px;
+  justify-items: start;
+}
+
+.lab-upload-box.ready {
+  border-color: #8fc4b8;
+}
+
+.lab-upload-box.disabled {
+  opacity: 1;
+  background: #f3f5f7;
+  border-color: #cfd7de;
+  cursor: not-allowed;
+}
+
+.lab-upload-note {
+  display: inline-flex;
+  min-height: 34px;
+  align-items: center;
+  padding: 0;
+  border-radius: 0;
+  background: transparent;
+  color: #5f7282;
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.lab-file-button {
+  position: relative;
+  overflow: hidden;
+}
+
+.lab-file-button input {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+
+.lab-file-button.disabled {
+  pointer-events: none;
+  opacity: 1;
+  cursor: not-allowed;
+  background: #dde3e8;
+  border-color: #dde3e8;
+  color: #7c8792;
+  box-shadow: none;
+}
+
+.lab-upload-footer .primary:disabled,
+.lab-upload-footer .secondary:disabled,
+.lab-search-bar .primary:disabled,
+.lab-modal-actions .primary:disabled {
+  background: #dde3e8;
+  border-color: #dde3e8;
+  color: #7c8792;
+  box-shadow: none;
+  cursor: not-allowed;
+}
+
+.lab-success-banner {
+  padding: 14px 16px;
+  display: grid;
+  gap: 6px;
+  background: #f2fbf7;
+  border-color: #cfe7dc;
+}
+
+.lab-patient-panel {
+  position: sticky;
+  top: 96px;
+  padding: 12px;
+}
+
+.lab-patient-panel .lab-card-head,
+.lab-card .lab-card-head {
+  margin-bottom: 4px;
+}
+
+.lab-patient-fact {
+  padding: 12px 14px;
+  display: grid;
+  gap: 6px;
+  background: #fbfdff;
+}
+
+.lab-patient-recent {
+  display: grid;
+  gap: 8px;
+}
+
+.lab-batch-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.lab-analytics-tile strong,
+.lab-stat-card strong {
+  font-size: 1.8rem;
+  color: #17314c;
+  line-height: 1;
+}
+
+.lab-modal-backdrop {
+  position: fixed;
+  inset: 0;
+  background: rgba(10, 19, 30, 0.36);
+  display: grid;
+  place-items: center;
+  z-index: 70;
+  padding: 20px;
+}
+
+.lab-modal-card {
+  width: min(100%, 520px);
+}
+
+.lab-modal-body {
+  display: grid;
+  gap: 12px;
+  margin-top: 12px;
+}
+
+.lab-modal-actions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 10px;
+  margin-top: 18px;
+}
+
+@media (max-width: 1180px) {
+  .lab-main-layout {
+    grid-template-columns: 1fr;
+  }
+
+  .lab-patient-panel {
+    position: static;
+  }
+}
+
+@media (max-width: 860px) {
+  .lab-search-bar,
+  .lab-analytics-grid,
+  .lab-result-card,
+  .lab-file-row,
+  .lab-activity-row,
+  .lab-patient-upload-row,
+  .lab-batch-placeholder,
+  .lab-modal-actions {
+    grid-template-columns: 1fr;
+  }
+
+  .lab-batch-placeholder,
+  .lab-modal-actions {
+    display: grid;
+  }
+
+  .lab-result-card,
+  .lab-file-row,
+  .lab-activity-row,
+  .lab-patient-upload-row {
+    align-items: flex-start;
+  }
 }
 
 .report-trend-card {

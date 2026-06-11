@@ -32,6 +32,7 @@ import { VisitRegistrationModal } from './components/VisitRegistrationModal'
 import { OpsShell } from './components/OpsShell'
 import { PatientDetailModal } from './components/PatientDetailModal'
 import { CreatePatientModal } from './components/CreatePatientModal'
+import { LabDeskWorkspace } from './components/LabDeskWorkspace'
 
 const AppointmentsWorkspace = lazy(() => import('./components/AppointmentsWorkspace').then((module) => ({ default: module.AppointmentsWorkspace })))
 const PartnerRequestsWorkspace = lazy(() => import('./components/PartnerRequestsWorkspace').then((module) => ({ default: module.PartnerRequestsWorkspace })))
@@ -136,6 +137,9 @@ function formatAppointmentRef(appointmentId) {
 }
 
 function App() {
+  const currentPath = typeof window !== 'undefined' ? window.location.pathname : '/'
+  const currentSearch = typeof window !== 'undefined' ? window.location.search : ''
+  const isLabConsoleRoute = currentPath === '/lab-console' || currentPath === '/lab-dashboard'
   const liveConsultParams = useMemo(() => {
     const params = new URLSearchParams(window.location.search)
     const consultId = Number(params.get('liveConsultId') || 0)
@@ -266,7 +270,16 @@ function App() {
   const apiFetch = async (url, options = {}) => {
     const headers = { ...(options.headers || {}) }
     if (token) headers.Authorization = `Bearer ${token}`
-    return fetch(url, { ...options, headers })
+    const response = await fetch(url, { ...options, headers })
+    if (response.status === 401 && token) {
+      sessionStorage.removeItem(OPS_TOKEN_STORAGE_KEY)
+      sessionStorage.removeItem(OPS_USER_STORAGE_KEY)
+      localStorage.removeItem(OPS_TOKEN_STORAGE_KEY)
+      localStorage.removeItem(OPS_USER_STORAGE_KEY)
+      setUser(null)
+      setToken('')
+    }
+    return response
   }
 
   const workspaceFallback = (
@@ -340,6 +353,9 @@ function App() {
     [user?.department_name],
   )
   const roleLabel = useMemo(() => {
+    if (isLabConsoleRoute && ['admin', 'front_desk'].includes(user?.role)) {
+      return 'LAB DESK'
+    }
     if (user?.role === 'doctor') {
       if (loginDoctorConsoleKind === 'surgery') return 'Surgery'
       if (loginDoctorConsoleKind === 'pediatrics') return 'Pediatrics'
@@ -350,8 +366,11 @@ function App() {
       doctor: 'Doctor',
     }
     return labels[user?.role] || 'Operations'
-  }, [user?.role, loginDoctorConsoleKind])
+  }, [isLabConsoleRoute, user?.role, loginDoctorConsoleKind])
   const workspaceOptions = useMemo(() => {
+    if (isLabConsoleRoute && ['admin', 'front_desk'].includes(user?.role)) {
+      return [{ value: 'labDesk', label: 'Lab operations desk' }]
+    }
     if (user?.role === 'admin') {
       return [
         { value: 'overview', label: 'Operations dashboard' },
@@ -380,7 +399,7 @@ function App() {
       ]
     }
     return []
-  }, [user?.role, loginDoctorConsoleKind])
+  }, [isLabConsoleRoute, user?.role, loginDoctorConsoleKind])
   const sidebarGroups = useMemo(() => {
     const available = new Set(workspaceOptions.map((option) => option.value))
     const groups = [
@@ -479,6 +498,11 @@ function App() {
       setActiveWorkspace(workspaceOptions[0].value)
     }
   }, [activeWorkspace, workspaceOptions])
+
+  useEffect(() => {
+    if (!isLabConsoleRoute) return
+    setActiveWorkspace('labDesk')
+  }, [isLabConsoleRoute])
 
   useEffect(() => {
     setOrderDraft((prev) => {
@@ -2310,19 +2334,55 @@ function App() {
     loadDepartments()
     const savedToken = sessionStorage.getItem(OPS_TOKEN_STORAGE_KEY) || localStorage.getItem(OPS_TOKEN_STORAGE_KEY)
     const savedUser = sessionStorage.getItem(OPS_USER_STORAGE_KEY) || localStorage.getItem(OPS_USER_STORAGE_KEY)
-    if (savedToken) setToken(savedToken)
-    if (savedUser) {
+
+    const clearSavedOpsAuth = () => {
+      sessionStorage.removeItem(OPS_TOKEN_STORAGE_KEY)
+      sessionStorage.removeItem(OPS_USER_STORAGE_KEY)
+      localStorage.removeItem(OPS_TOKEN_STORAGE_KEY)
+      localStorage.removeItem(OPS_USER_STORAGE_KEY)
+    }
+
+    if (!savedToken || !savedUser) {
+      setAuthHydrated(true)
+      return
+    }
+
+    let cancelled = false
+    const restoreSession = async () => {
       try {
         const parsed = JSON.parse(savedUser)
-        if (['admin', 'front_desk', 'doctor'].includes(parsed?.role)) {
-          setUser(parsed)
+        if (!['admin', 'front_desk', 'doctor'].includes(parsed?.role)) {
+          clearSavedOpsAuth()
+          return
         }
+        const response = await fetch(`${API_BASE}/api/auth/me`, {
+          headers: {
+            Authorization: `Bearer ${savedToken}`,
+          },
+        })
+        if (!response.ok) {
+          clearSavedOpsAuth()
+          return
+        }
+        const data = await response.json().catch(() => ({}))
+        if (cancelled) return
+        if (!['admin', 'front_desk', 'doctor'].includes(data?.user?.role)) {
+          clearSavedOpsAuth()
+          return
+        }
+        setToken(savedToken)
+        setUser(data.user)
       } catch {
-        sessionStorage.removeItem(OPS_USER_STORAGE_KEY)
-        localStorage.removeItem(OPS_USER_STORAGE_KEY)
+        clearSavedOpsAuth()
+      } finally {
+        if (!cancelled) setAuthHydrated(true)
       }
     }
-    setAuthHydrated(true)
+
+    restoreSession()
+    return () => {
+      cancelled = true
+    }
   }, [])
 
   useEffect(() => {
@@ -3680,6 +3740,7 @@ function App() {
     <div className="app">
       <main>
         {!authHydrated ? (
+        
           <section className="grid">
             <div className="doctor-console-empty">Restoring hospital workspace…</div>
           </section>
@@ -3687,38 +3748,50 @@ function App() {
           <section className="ops-auth-shell">
             <div className="ops-auth-hero">
               <div className="ops-auth-copy">
-                <p className="eyebrow">Hospital Ops</p>
-                <h1>SehatSaathi Hospital Operations</h1>
+                <p className="eyebrow">{isLabConsoleRoute ? 'Lab desk' : 'Hospital Ops'}</p>
+                <h1>{isLabConsoleRoute ? 'SehatSaathi Lab Operations' : 'SehatSaathi Hospital Operations'}</h1>
                 <p className="lead">
-                  Role-based control surface for admin, front desk, and doctor teams. Manage patient movement,
-                  consult workflow, and hospital configuration from one branded ops layer.
+                  {isLabConsoleRoute
+                    ? 'Connected lab intake for patient matching, report upload, batch mapping, and follow-up continuity.'
+                    : 'Role-based control surface for admin, front desk, and doctor teams. Manage patient movement, consult workflow, and hospital configuration from one branded ops layer.'}
                 </p>
                 <div className="ops-auth-pills">
-                  <span className="pill">Doctor console</span>
-                  <span className="pill">Patient administration</span>
-                  <span className="pill">Appointment control</span>
-                  <span className="pill">Hospital settings</span>
+                  {isLabConsoleRoute ? (
+                    <>
+                      <span className="pill">Patient-matched intake</span>
+                      <span className="pill">Batch upload mapping</span>
+                      <span className="pill">Report continuity</span>
+                      <span className="pill">Upload analytics</span>
+                    </>
+                  ) : (
+                    <>
+                      <span className="pill">Doctor console</span>
+                      <span className="pill">Patient administration</span>
+                      <span className="pill">Appointment control</span>
+                      <span className="pill">Hospital settings</span>
+                    </>
+                  )}
                 </div>
                 <div className="ops-auth-trust">
                   <div className="ops-auth-stat">
                     <strong>Role aware</strong>
-                    <span>Doctor, front desk, and admin access</span>
+                    <span>{isLabConsoleRoute ? 'Front desk and admin lab access' : 'Doctor, front desk, and admin access'}</span>
                   </div>
                   <div className="ops-auth-stat">
-                    <strong>Department routed</strong>
-                    <span>Surgery, pediatrics, and general clinical workflows</span>
+                    <strong>{isLabConsoleRoute ? 'Connected workflows' : 'Department routed'}</strong>
+                    <span>{isLabConsoleRoute ? 'Patient, doctor, and lab records stay connected' : 'Surgery, pediatrics, and general clinical workflows'}</span>
                   </div>
                   <div className="ops-auth-stat">
-                    <strong>Continuity ready</strong>
-                    <span>History, prescriptions, and orders inside one console</span>
+                    <strong>{isLabConsoleRoute ? 'Continuity ready' : 'Continuity ready'}</strong>
+                    <span>{isLabConsoleRoute ? 'Uploads feed reports, plans, and doctor review' : 'History, prescriptions, and orders inside one console'}</span>
                   </div>
                 </div>
               </div>
               <div className="panel ops-auth-card">
                 <div className="ops-auth-card-head">
-                  <p className="eyebrow">Ops sign in</p>
-                  <h2>Access hospital workspace</h2>
-                  <p className="panel-sub">Use admin, front desk, or doctor credentials.</p>
+                  <p className="eyebrow">{isLabConsoleRoute ? 'Lab sign in' : 'Ops sign in'}</p>
+                  <h2>{isLabConsoleRoute ? 'Access lab desk' : 'Access hospital workspace'}</h2>
+                  <p className="panel-sub">{isLabConsoleRoute ? 'Use admin or front desk credentials.' : 'Use admin, front desk, or doctor credentials.'}</p>
                 </div>
                 <form className="auth ops-auth-form" onSubmit={handleLogin}>
                   <label>
@@ -3850,6 +3923,7 @@ function App() {
             setActiveWorkspace={setActiveWorkspace}
             sidebarGroups={sidebarGroups}
             workspaceOptions={workspaceOptions}
+            shellMode={isLabConsoleRoute ? 'lab' : 'ops'}
           >
             <Suspense fallback={workspaceFallback}>
 
@@ -3961,9 +4035,18 @@ function App() {
                 />
               )}
 
-              {['admin', 'front_desk'].includes(user.role) && activeWorkspace === 'overview' && (
+            {['admin', 'front_desk'].includes(user.role) && activeWorkspace === 'overview' && (
                 <OverviewWorkspace opsStatus={opsStatus} opsData={opsData} dashboardCards={dashboardCards} />
               )}
+
+            {['admin', 'front_desk'].includes(user.role) && activeWorkspace === 'labDesk' && (
+              <LabDeskWorkspace
+                apiBase={API_BASE}
+                apiFetch={apiFetch}
+                authToken={token}
+                signOut={signOut}
+              />
+            )}
 
             {['admin', 'front_desk'].includes(user.role) && activeWorkspace === 'queue' && (
               <QueueWorkspace

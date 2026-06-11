@@ -85,7 +85,7 @@ describe("patient critical flow hooks", () => {
     expect(setUser).toHaveBeenCalledWith({ id: 7, name: "Ved Patel", role: "patient" });
     expect(setProfileEditMode).toHaveBeenCalledWith(false);
     expect(loadProfile).toHaveBeenCalledWith(7);
-    expect(setProfileStatus).toHaveBeenLastCalledWith("Profile saved.");
+    expect(setProfileStatus).toHaveBeenLastCalledWith("Profile saved for your next visit.");
   });
 
   it("opens report uploader and uploads a record", async () => {
@@ -139,7 +139,7 @@ describe("patient critical flow hooks", () => {
       expect.objectContaining({ method: "POST" }),
     );
     expect(loadRecords).toHaveBeenCalledWith(4);
-    expect(setRecordStatus).toHaveBeenLastCalledWith("Record uploaded.");
+    expect(setRecordStatus).toHaveBeenLastCalledWith("Report uploaded.");
     expect(event.target.value).toBe("");
   });
 

@@ -5,15 +5,142 @@ const registerAnalyticsRoutes = (fastify, deps) => {
     requireOps,
     all,
     get,
+    run,
     nowIso,
     safeJsonParse,
   } = deps;
+  const compactText = (value, maxLength = 300) =>
+    String(value || "")
+      .trim()
+      .replace(/\s+/g, " ")
+      .slice(0, maxLength);
+  const allowedLaunchEvents = new Set([
+    "launch_page_viewed",
+    "launch_audience_selected",
+    "launch_patient_cta_clicked",
+    "launch_whatsapp_clicked",
+    "launch_pilot_lead_completed",
+  ]);
   const isoDateDaysAgo = (days) => {
     const date = new Date();
     date.setUTCDate(date.getUTCDate() - Number(days || 0));
     return date.toISOString().slice(0, 10);
   };
   const todayIsoDate = () => new Date().toISOString().slice(0, 10);
+
+  fastify.post("/api/public/launch-event", async (request, reply) => {
+    const body = request.body || {};
+    const eventName = compactText(body.eventName, 80);
+    if (!allowedLaunchEvents.has(eventName)) {
+      return reply.code(400).send({ error: "Unsupported campaign event." });
+    }
+    const payload = {
+      source: compactText(body.source, 80) || "direct",
+      campaign: compactText(body.campaign, 80) || "india-launch",
+      audience: compactText(body.audience, 30) || "patient",
+      path: compactText(body.path, 120) || "/launch",
+      metadata: body.metadata && typeof body.metadata === "object" ? body.metadata : {},
+    };
+    await run(
+      `INSERT INTO analytics_events (user_id, event_name, event_payload, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [null, eventName, JSON.stringify(payload), nowIso()],
+    );
+    return { ok: true };
+  });
+
+  fastify.post("/api/public/pilot-interest", async (request, reply) => {
+    const body = request.body || {};
+    if (compactText(body.website, 200)) {
+      return { ok: true };
+    }
+    const name = compactText(body.name, 120);
+    const organization = compactText(body.organization, 160);
+    const phone = compactText(body.phone, 40).replace(/[^\d+]/g, "");
+    const email = compactText(body.email, 180).toLowerCase();
+    const city = compactText(body.city, 100);
+    const organizationType = compactText(body.organizationType, 80);
+    const monthlyReports = Math.max(0, Math.min(1000000, Number(body.monthlyReports) || 0));
+    if (!body.consent) {
+      return reply.code(400).send({ error: "Contact consent is required." });
+    }
+    if (name.length < 2 || organization.length < 2 || city.length < 2 || organizationType.length < 2) {
+      return reply.code(400).send({ error: "Name, organisation, city, and organisation type are required." });
+    }
+    if (phone.replace(/\D/g, "").length < 10) {
+      return reply.code(400).send({ error: "Enter a valid WhatsApp number." });
+    }
+    if (email && !email.includes("@")) {
+      return reply.code(400).send({ error: "Enter a valid work email." });
+    }
+    const createdAt = nowIso();
+    const result = await run(
+      `INSERT INTO pilot_interest_leads
+       (name, organization, phone, email, city, organization_type, monthly_reports,
+        message, source, campaign, status, consent_at, created_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'new', ?, ?)`,
+      [
+        name,
+        organization,
+        phone,
+        email || null,
+        city,
+        organizationType,
+        monthlyReports,
+        compactText(body.message, 1200),
+        compactText(body.source, 80) || "direct",
+        compactText(body.campaign, 80) || "india-launch",
+        createdAt,
+        createdAt,
+      ],
+    );
+    await run(
+      `INSERT INTO analytics_events (user_id, event_name, event_payload, created_at)
+       VALUES (?, ?, ?, ?)`,
+      [
+        null,
+        "launch_pilot_lead_created",
+        JSON.stringify({
+          leadId: result.lastID,
+          source: compactText(body.source, 80) || "direct",
+          campaign: compactText(body.campaign, 80) || "india-launch",
+          organizationType,
+          city,
+        }),
+        createdAt,
+      ],
+    );
+    return { ok: true, leadId: result.lastID };
+  });
+
+  fastify.get("/api/admin/pilot-interest", async (request, reply) => {
+    if (!requireAdmin(request, reply)) return;
+    const leads = await all(
+      `SELECT id, name, organization, phone, email, city, organization_type,
+              monthly_reports, message, source, campaign, status, consent_at, created_at
+       FROM pilot_interest_leads
+       ORDER BY datetime(created_at) DESC
+       LIMIT 500`,
+    );
+    return {
+      leads: leads.map((row) => ({
+        id: row.id,
+        name: row.name,
+        organization: row.organization,
+        phone: row.phone,
+        email: row.email || "",
+        city: row.city,
+        organizationType: row.organization_type,
+        monthlyReports: Number(row.monthly_reports || 0),
+        message: row.message || "",
+        source: row.source || "direct",
+        campaign: row.campaign || "india-launch",
+        status: row.status,
+        consentAt: row.consent_at,
+        createdAt: row.created_at,
+      })),
+    };
+  });
 
   fastify.get("/api/audit/me", async (request, reply) => {
     if (!requireAuth(request, reply)) return;
@@ -39,7 +166,7 @@ const registerAnalyticsRoutes = (fastify, deps) => {
   fastify.get("/api/admin/analytics/overview", async (request, reply) => {
     if (!requireAdmin(request, reply)) return;
 
-    const [userTotals, triageTotals, shareTotals, doctorViewTotals, ratingTotals, errorTotals] =
+    const [userTotals, triageTotals, shareTotals, doctorViewTotals, ratingTotals, errorTotals, funnelCounts] =
       await Promise.all([
         get("SELECT COUNT(*) AS count FROM users"),
         get("SELECT COUNT(*) AS count FROM triage_logs"),
@@ -50,6 +177,22 @@ const registerAnalyticsRoutes = (fastify, deps) => {
           `SELECT COUNT(*) AS count FROM error_logs
            WHERE created_at >= ?`,
           [new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString()],
+        ),
+        all(
+          `SELECT event_name, COUNT(*) AS count
+           FROM analytics_events
+           WHERE event_name IN (
+             'report_upload_started',
+             'report_upload_completed',
+             'plan_started',
+             'timeline_opened',
+             'followup_booked',
+             'lab_booked',
+             'drop_off'
+           )
+             AND created_at >= ?
+           GROUP BY event_name`,
+          [new Date(Date.now() - 30 * 24 * 60 * 60 * 1000).toISOString()],
         ),
       ]);
 
@@ -109,6 +252,26 @@ const registerAnalyticsRoutes = (fastify, deps) => {
       }
     }
 
+    const funnel30d = {
+      reportUploadStarted: 0,
+      reportUploadCompleted: 0,
+      planStarted: 0,
+      timelineOpened: 0,
+      followupBooked: 0,
+      labBooked: 0,
+      dropOffs: 0,
+    };
+    for (const row of funnelCounts || []) {
+      const count = Number(row.count || 0);
+      if (row.event_name === "report_upload_started") funnel30d.reportUploadStarted = count;
+      if (row.event_name === "report_upload_completed") funnel30d.reportUploadCompleted = count;
+      if (row.event_name === "plan_started") funnel30d.planStarted = count;
+      if (row.event_name === "timeline_opened") funnel30d.timelineOpened = count;
+      if (row.event_name === "followup_booked") funnel30d.followupBooked = count;
+      if (row.event_name === "lab_booked") funnel30d.labBooked = count;
+      if (row.event_name === "drop_off") funnel30d.dropOffs = count;
+    }
+
     return {
       generatedAt: nowIso(),
       totals: {
@@ -126,6 +289,7 @@ const registerAnalyticsRoutes = (fastify, deps) => {
         doctorViewOpened: latestKpis?.doctorViews30 || 0,
         sevenDayRetentionAvg: Number(Number(latestKpis?.retentionAvg30 || 0).toFixed(2)),
       },
+      funnel30d,
       feedback30d: feedback,
       doctorRatingsBreakdown,
       dailySeries,

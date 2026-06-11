@@ -6,11 +6,16 @@ export function HospitalContentView({
   setActiveHospitalSection,
 }) {
   return (
-    <section className="panel">
-      <h2>{hospitalContent?.profile?.hospitalName || "SehatSaathi Hospital"}</h2>
-      <p className="panel-sub">
-        Cashless partners, service scope, health packages, Ayushman support, and super-speciality details.
-      </p>
+    <section className="panel hospital-panel">
+      <div className="hospital-shell-hero">
+        <div>
+          <p className="eyebrow">Hospital</p>
+          <h2>{hospitalContent?.profile?.hospitalName || "SehatSaathi Hospital"}</h2>
+          <p className="panel-sub">
+            Cashless partners, service scope, health packages, Ayushman support, and super-speciality details.
+          </p>
+        </div>
+      </div>
       {hospitalContentStatus ? <p className="micro">{hospitalContentStatus}</p> : null}
       <div className="hospital-layout">
         <aside className="hospital-nav" aria-label="Hospital information sections">

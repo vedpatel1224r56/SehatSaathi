@@ -2,8 +2,10 @@ const path = require("path");
 const fs = require("fs");
 const crypto = require("crypto");
 const { spawn } = require("child_process");
+const { captureException: sentryCaptureException } = require("./sentrySetup");
 const Fastify = require("fastify");
 const cors = require("@fastify/cors");
+const helmet = require("@fastify/helmet");
 const multipart = require("@fastify/multipart");
 const bcrypt = require("bcryptjs");
 const jwt = require("jsonwebtoken");
@@ -15,6 +17,11 @@ const {
   DB_PATH,
   UPLOAD_DIR,
   RECORDS_DIR,
+  FILE_STORAGE_MODE,
+  PUBLIC_UPLOAD_BASE_URL,
+  SUPPORT_EMAIL,
+  SUPPORT_PHONE,
+  SUPPORT_WHATSAPP,
   JWT_SECRET,
   JWT_EXPIRES_IN,
   REFRESH_TOKEN_EXPIRES_DAYS,
@@ -42,6 +49,14 @@ const {
   UPTIME_HEARTBEAT_SECONDS,
   RAZORPAY_KEY_ID,
   RAZORPAY_KEY_SECRET,
+  ABDM_ENABLED,
+  ABDM_BASE_URL,
+  ABDM_CLIENT_ID,
+  ABDM_CLIENT_SECRET,
+  ABDM_SESSION_PATH,
+  ABDM_ABHA_VERIFY_URL,
+  ABDM_ABHA_PROFILE_URL,
+  ABDM_TIMEOUT_MS,
   validateRuntimeConfig,
 } = require("./config");
 const { createDbHelpers, ensureDir } = require("./db");
@@ -64,6 +79,7 @@ const { registerClinicalRoutes } = require("./routes/clinicalRoutes");
 const { registerSystemRoutes } = require("./routes/systemRoutes");
 const { registerTriageRoutes } = require("./routes/triageRoutes");
 const { registerAnalyticsRoutes } = require("./routes/analyticsRoutes");
+const { registerGuestReportRoutes } = require("./routes/guestReportRoutes");
 const {
   createPublicId,
   createShareCode,
@@ -82,6 +98,8 @@ const { createMarketplaceService } = require("./services/marketplaceService");
 const { createAccessService } = require("./services/accessService");
 const { createScheduleService } = require("./services/scheduleService");
 const { createTriageService } = require("./services/triageService");
+const { createReminderService } = require("./services/reminderService");
+const { createAbdmService } = require("./services/abdmService");
 
 const fastify = Fastify({ logger: true });
 
@@ -248,6 +266,19 @@ const { buildMarketplaceFallbackOptions } = createMarketplaceService({
   all,
   get,
 });
+const {
+  ensureSettings: ensureNotificationSettings,
+  updateSettings: updateNotificationSettings,
+  processDueReminders,
+  generateDueRemindersForUser,
+} = createReminderService({
+  all,
+  get,
+  run,
+  nowIso,
+  enqueueAndDeliverUserNotification,
+  log: fastify.log,
+});
 
 
 const { createInitDb } = require("./initDb");
@@ -277,6 +308,25 @@ const {
   PYTHON_BIN,
   TRIAGE_MODEL_SCRIPT,
   TRIAGE_MODEL_FILE,
+});
+
+// Security headers — prevents clickjacking, MIME-sniffing, XSS
+fastify.register(helmet, {
+  // Allow inline scripts only for the health check endpoint; tighten after pilot
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"],   // inline styles from Fastify swagger etc.
+      imgSrc:     ["'self'", "data:", "https:"],
+      connectSrc: ["'self'"],
+      fontSrc:    ["'self'", "https:", "data:"],
+      objectSrc:  ["'none'"],
+      frameAncestors: ["'none'"],                  // blocks clickjacking
+      upgradeInsecureRequests: [],
+    },
+  },
+  crossOriginEmbedderPolicy: false,   // needed if you serve uploaded files directly
 });
 
 fastify.register(cors, {
@@ -403,6 +453,18 @@ const {
 const { getDoctorSchedules, buildDoctorSlots } = createScheduleService({
   all,
 });
+const abdmService = createAbdmService({
+  fetch,
+  nowIso,
+  enabled: ABDM_ENABLED,
+  baseUrl: ABDM_BASE_URL,
+  clientId: ABDM_CLIENT_ID,
+  clientSecret: ABDM_CLIENT_SECRET,
+  sessionPath: ABDM_SESSION_PATH,
+  abhaVerifyUrl: ABDM_ABHA_VERIFY_URL,
+  abhaProfileUrl: ABDM_ABHA_PROFILE_URL,
+  timeoutMs: ABDM_TIMEOUT_MS,
+});
 
 const getFamilyMember = async (userId, memberId) => {
   if (!memberId) return null;
@@ -426,6 +488,9 @@ registerSystemRoutes(fastify, {
   safeJsonParse,
   fs,
   get,
+  run,
+  all,
+  sendOpsAlert,
 });
 
 registerAuthRoutes(fastify, {
@@ -448,6 +513,9 @@ registerAuthRoutes(fastify, {
   hashToken,
   generateOtpCode,
   queuePasswordResetOtpDelivery,
+  ensureNotificationSettings,
+  updateNotificationSettings,
+  generateDueRemindersForUser,
 });
 
 registerAdminRoutes(fastify, {
@@ -513,6 +581,7 @@ registerMarketplaceRoutes(fastify, {
 
 const saveUpload = async (part, options = {}) => {
   const { dir = UPLOAD_DIR, prefix = "upload" } = options;
+  ensureDir(dir);
   const ext = part.filename ? path.extname(part.filename) : "";
   const safeName = `${prefix}_${Date.now()}_${Math.random()
     .toString(36)
@@ -522,24 +591,35 @@ const saveUpload = async (part, options = {}) => {
   await new Promise((resolve, reject) => {
     const stream = fs.createWriteStream(filePath);
     part.file.pipe(stream);
-    part.file.on("end", resolve);
+    stream.on("finish", resolve);
     part.file.on("error", reject);
     stream.on("error", reject);
   });
 
-  return { filename: safeName, path: filePath, mimetype: part.mimetype };
+  const publicUrl = PUBLIC_UPLOAD_BASE_URL ? `${PUBLIC_UPLOAD_BASE_URL}/${safeName}` : "";
+  return {
+    filename: safeName,
+    path: filePath,
+    mimetype: part.mimetype,
+    storageMode: FILE_STORAGE_MODE,
+    publicUrl,
+  };
 };
 
 registerHospitalRoutes(fastify, {
   requireOps,
   requireAdmin,
+  get,
   all,
+  run,
   nowIso,
+  buildPatientUid,
   enqueueAndDeliverUserNotification,
   hospitalSettingsService,
   saveUpload,
   fs,
   path,
+  recordsDir: RECORDS_DIR,
   hospitalContentAssetsDir: HOSPITAL_CONTENT_ASSETS_DIR,
 });
 
@@ -567,6 +647,10 @@ registerPatientRoutes(fastify, {
   metricDate,
   createPublicId,
   enqueueAndDeliverUserNotification,
+  abdmService,
+  supportEmail: SUPPORT_EMAIL,
+  supportPhone: SUPPORT_PHONE,
+  supportWhatsapp: SUPPORT_WHATSAPP,
 });
 
 registerClinicalRoutes(fastify, {
@@ -606,8 +690,21 @@ registerAnalyticsRoutes(fastify, {
   requireOps,
   all,
   get,
+  run,
   nowIso,
   safeJsonParse,
+});
+
+registerGuestReportRoutes(fastify, {
+  requireAuth,
+  run,
+  get,
+  nowIso,
+  saveUpload,
+  RECORDS_DIR,
+  path,
+  safeJsonParse,
+  checkRateLimit,
 });
 
 fastify.setErrorHandler(async (error, request, reply) => {
@@ -628,6 +725,16 @@ fastify.setErrorHandler(async (error, request, reply) => {
     );
   } catch (persistErr) {
     request.log.error(persistErr);
+  }
+
+  // Forward 5xx errors to Sentry (no-op when SENTRY_DSN not set)
+  if ((error.statusCode || 500) >= 500) {
+    sentryCaptureException(error, {
+      userId: request.authUser?.id || null,
+      requestId: request.requestId || request.id,
+      path: request.routerPath || request.url || null,
+      method: request.method,
+    });
   }
 
   request.log.error(error);
@@ -663,6 +770,7 @@ const start = async () => {
   await purgeExpiredSharePasses();
   await purgeExpiredIdempotencyKeys();
   await purgeExpiredSessions();
+  await processDueReminders({ limit: 200 });
   await processNotificationOutbox({ limit: 200 });
   try {
     await fastify.listen({ port: PORT, host: "0.0.0.0" });
@@ -709,8 +817,44 @@ const start = async () => {
     }, 5 * 60 * 1000).unref();
 
     setInterval(() => {
+      processDueReminders({ limit: 200 }).catch((err) => fastify.log.error(err));
+    }, 5 * 60 * 1000).unref();
+
+    setInterval(() => {
       processNotificationOutbox({ limit: 100 }).catch((err) => fastify.log.error(err));
     }, 15 * 1000).unref();
+
+    // ── Nightly DB backup at 02:00 server time ───────────────────
+    if (NODE_ENV === "production" && DB_PROVIDER !== "postgres") {
+      const scheduleNightlyBackup = () => {
+        const now = new Date();
+        const next2am = new Date(now);
+        next2am.setHours(2, 0, 0, 0);
+        if (next2am <= now) next2am.setDate(next2am.getDate() + 1);
+        const msUntil2am = next2am - now;
+
+        setTimeout(() => {
+          const backupScript = path.join(__dirname, "../../scripts/backup_db.sh");
+          const env = { ...process.env, DB_PATH: DB_PATH || "", BACKUP_DIR: path.join(path.dirname(DB_PATH || "/data/sehatsaathi.db"), "backups") };
+          const proc = spawn("bash", [backupScript], { env, stdio: "pipe" });
+          let out = "";
+          proc.stdout?.on("data", (d) => { out += d; });
+          proc.stderr?.on("data", (d) => { out += d; });
+          proc.on("close", (code) => {
+            if (code === 0) {
+              fastify.log.info({ event: "db_backup_success", output: out.trim() }, "db_backup_success");
+            } else {
+              fastify.log.error({ event: "db_backup_failed", code, output: out.trim() }, "db_backup_failed");
+              sendOpsAlert({ key: "db-backup-failed", severity: "critical", message: "Nightly DB backup failed", context: { code, output: out.trim().slice(0, 500) } });
+            }
+          });
+          // Schedule the next one
+          scheduleNightlyBackup();
+        }, msUntil2am).unref();
+      };
+      scheduleNightlyBackup();
+      fastify.log.info("Nightly DB backup scheduled at 02:00 server time.");
+    }
   } catch (err) {
     fastify.log.error(err);
     await sendOpsAlert({

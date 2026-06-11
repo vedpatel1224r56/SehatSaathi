@@ -1,11 +1,14 @@
+import { useLang } from "../../i18n.js";
+
 export function ReportTrendChart({ title, unit = "", points = [], zone = "neutral", needsReview = false }) {
+  const { t } = useLang();
   if (!Array.isArray(points) || points.length === 0) {
     return (
       <div className="report-trend-card">
         <div className="section-head compact">
           <div>
             <p className="micro strong">{title}</p>
-            <p className="micro">No trend points available yet.</p>
+            <p className="micro">{t("no_trend_points")}</p>
           </div>
         </div>
       </div>
@@ -28,10 +31,27 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
   const delta = Number.isFinite(latestValue) && Number.isFinite(previousValue) ? latestValue - previousValue : null;
   const trendLabel =
     delta == null
-      ? "First structured reading"
+      ? t("first_reading")
       : delta === 0
-        ? "Stable from previous"
-        : `${delta > 0 ? "+" : ""}${formatValue(delta)}${unit ? ` ${unit}` : ""} vs previous`;
+        ? t("stable_previous")
+        : t("versus_previous", { value: `${delta > 0 ? "+" : ""}${formatValue(delta)}${unit ? ` ${unit}` : ""}` });
+
+  // Context note for large or alarming-looking deltas to prevent patient panic
+  const largeDeltaContext = (() => {
+    if (delta == null || previousValue === 0) return null;
+    const percentChange = Math.abs(delta / previousValue) * 100;
+    if (percentChange < 20) return null;
+    if (delta > 0 && zone === "high") {
+      return t("rise_discuss");
+    }
+    if (delta < 0 && zone === "low") {
+      return t("drop_discuss");
+    }
+    if (percentChange >= 30) {
+      return t("large_change_context");
+    }
+    return null;
+  })();
 
   if (points.length < 2) {
     return (
@@ -39,14 +59,14 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
         <div className="section-head compact">
           <div>
             <p className="micro strong">{title}</p>
-            <p className={`micro report-zone-${zone}`}>{zone === "high" ? "Above range" : zone === "low" ? "Below range" : "Within range"}</p>
+            <p className={`micro report-zone-${zone}`}>{zone === "high" ? t("above_range") : zone === "low" ? t("below_range") : t("within_range")}</p>
           </div>
-          {needsReview ? <span className="report-badge report-zone-low">Needs review</span> : null}
+          {needsReview ? <span className="report-badge report-zone-low">{t("needs_review")}</span> : null}
         </div>
         <div className="report-trend-value">{formatValue(latestValue)}{unit ? <span>{unit}</span> : null}</div>
         <div className="report-trend-meta">
-          <span>{latestPoint?.label ? new Date(latestPoint.label).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "Latest report"}</span>
-          <span>Need one more reading to compare trend</span>
+          <span>{latestPoint?.label ? new Date(latestPoint.label).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : t("latest_report")}</span>
+          <span>{t("one_more_compare")}</span>
         </div>
       </div>
     );
@@ -62,7 +82,7 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
   const plotHeight = height - padTop - padBottom;
   const range = max - min || 1;
   const formatAxisLabel = (label, index) =>
-    label ? new Date(label).toLocaleDateString(undefined, { month: "short", year: "2-digit" }) : `#${index + 1}`;
+    label ? new Date(label).toLocaleDateString(undefined, { month: "short", year: "numeric" }) : `#${index + 1}`;
   const labelGroups = points.reduce((groups, point, index) => {
     const label = formatAxisLabel(point.label, index);
     const lastGroup = groups[groups.length - 1];
@@ -102,7 +122,7 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
           <p className="micro strong">{title}</p>
           <p className={`micro report-zone-${zone}`}>{trendLabel}</p>
         </div>
-        {needsReview ? <span className="report-badge report-zone-low">Needs review</span> : null}
+        {needsReview ? <span className="report-badge report-zone-low">{t("needs_review")}</span> : null}
       </div>
       <div className="report-trend-summary-row">
         <div className="report-trend-value">
@@ -110,8 +130,8 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
           {unit ? <span>{unit}</span> : null}
         </div>
         <div className="report-trend-meta">
-          <span>{latestPoint?.label ? new Date(latestPoint.label).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : "Latest report"}</span>
-          <span>{zone === "high" ? "Above range" : zone === "low" ? "Below range" : "Within range"}</span>
+          <span>{latestPoint?.label ? new Date(latestPoint.label).toLocaleDateString(undefined, { day: "2-digit", month: "short", year: "numeric" }) : t("latest_report")}</span>
+          <span>{zone === "high" ? t("above_range") : zone === "low" ? t("below_range") : t("within_range")}</span>
         </div>
       </div>
       <svg viewBox={`0 0 ${width} ${height}`} className="report-trend-svg" role="img" aria-label={title}>
@@ -142,8 +162,14 @@ export function ReportTrendChart({ title, unit = "", points = [], zone = "neutra
             </text>
           );
         })}
-        <text x={width / 2} y={height - 2} textAnchor="middle" fontSize="11" fill="#75879a">Report date</text>
+        <text x={width / 2} y={height - 2} textAnchor="middle" fontSize="11" fill="#75879a">{t("report_date")}</text>
       </svg>
+      {largeDeltaContext ? (
+        <p className="report-trend-context-note">ℹ️ {largeDeltaContext}</p>
+      ) : null}
+      {points.length < 3 ? (
+        <p className="report-trend-prompt">{t("upload_more_trend")}</p>
+      ) : null}
     </div>
   );
 }

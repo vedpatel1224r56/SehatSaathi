@@ -493,7 +493,7 @@ const registerMarketplaceRoutes = (fastify, deps) => {
         userId: Number(requestRow.user_id),
         type: "marketplace_status",
         title: `${requestRow.request_type === "lab" ? "Lab" : "Pharmacy"} request update`,
-        message: `Request #${requestId} was marked ${readable}.${fallbackSuffix}`,
+        message: `Your ${requestRow.request_type === "lab" ? "lab" : "pharmacy"} request is now ${readable}.${fallbackSuffix}`,
         relatedId: requestId,
         eventKey: `marketplace:${requestId}:status:${status}`,
       });
@@ -567,7 +567,7 @@ const registerMarketplaceRoutes = (fastify, deps) => {
       userId: Number(requestRow.user_id),
       type: "marketplace_status",
       title: `${requestRow.request_type === "lab" ? "Lab" : "Pharmacy"} request update`,
-      message: `Request #${requestId} was marked ${readable}.${fallbackSuffix}`,
+      message: `Your ${requestRow.request_type === "lab" ? "lab" : "pharmacy"} request is now ${readable}.${fallbackSuffix}`,
       relatedId: requestId,
       eventKey: `marketplace:${requestId}:ops-status:${status}`,
     });

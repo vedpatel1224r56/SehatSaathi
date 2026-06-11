@@ -1,4 +1,4 @@
-import { render, screen, fireEvent, act } from "@testing-library/react";
+import { render, screen, fireEvent, act, waitFor } from "@testing-library/react";
 import App from "./App";
 import {
   computeProfileCompletion,
@@ -14,20 +14,27 @@ describe("patient ops utils", () => {
     const score = computeProfileCompletion({
       fullName: "Ved Patel",
       email: "ved@example.com",
-      registrationMode: "opd",
+      age: "22",
       sex: "Male",
       phone: "9999999999",
-      maritalStatus: "single",
-      dateOfBirth: "2004-01-01",
-      bloodGroup: "O+",
-      addressLine1: "Address line 1",
-      city: "Vadodara",
-      state: "Gujarat",
-      pinCode: "390001",
-      emergencyContactName: "Parent",
-      emergencyContactPhone: "8888888888",
+      abhaNumber: "12-3456-7890-1234",
     });
     expect(score).toBe(100);
+  });
+
+  it("does not mark the profile complete until ABHA is added", () => {
+    const score = computeProfileCompletion({
+      fullName: "Ved Patel",
+      email: "ved@example.com",
+      age: "22",
+      sex: "Male",
+      phone: "9999999999",
+      abhaNumber: "",
+      abhaAddress: "",
+      dateOfBirth: "",
+      bloodGroup: "",
+    });
+    expect(score).toBeLessThan(100);
   });
 
   it("formats marketplace status labels", () => {
@@ -45,7 +52,7 @@ describe("patient ops utils", () => {
       { deliveryFee: 10, etaMinutes: 15, distanceKm: 1 },
     ];
     expect(sortLabs(labs, "all", "cheapest")[0].startingPrice).toBe(250);
-    expect(sortLabs(labs, "home", "cheapest")[0].homeStartingPrice).toBe(450);
+    expect(sortLabs(labs, "home", "cheapest")[0].startingPrice).toBe(250);
     expect(sortPharmacies(pharmacies, "cheapest")[0].deliveryFee).toBe(10);
   });
 
@@ -65,14 +72,46 @@ describe("patient app guest shell", () => {
     });
   });
 
-  it("renders auth screen and toggles auth mode", async () => {
+  it("renders upload-first landing and opens auth when requested", async () => {
     render(<App />);
-    expect(screen.getByText("SehatSaathi")).toBeInTheDocument();
-    expect(screen.getByText("Sign in to SehatSaathi")).toBeInTheDocument();
+    expect(screen.getAllByText(/Free · No account needed/)[0]).toBeInTheDocument();
+    expect(screen.getAllByRole("button", { name: /upload your report/i })[0]).toBeInTheDocument();
+    expect(screen.queryByText("Before we begin")).not.toBeInTheDocument();
+
     await act(async () => {
-      fireEvent.click(screen.getAllByRole("button", { name: /create/i })[0]);
+      fireEvent.click(screen.getByRole("button", { name: /sign in/i }));
     });
-    expect(screen.getByText("Create your account")).toBeInTheDocument();
+    expect(screen.getByText("Sign in to SehatSaathi")).toBeInTheDocument();
+
+    await act(async () => {
+      fireEvent.click(screen.getByRole("button", { name: /create account/i }));
+    });
+    expect(screen.getByText("Save your report")).toBeInTheDocument();
+    fireEvent.change(screen.getByLabelText("Name"), { target: { value: "New Patient" } });
+    fireEvent.change(screen.getByLabelText("Email"), { target: { value: "new@example.com" } });
+    fireEvent.change(screen.getByLabelText("Password"), { target: { value: "password123" } });
+    fireEvent.click(screen.getAllByRole("button", { name: "Create account" }).at(-1));
+    expect(await screen.findByText("What we collect")).toBeInTheDocument();
+  });
+
+  it("restores a saved session from localStorage on app reopen", async () => {
+    localStorage.setItem("health_user", JSON.stringify({ id: 7, name: "Ved Patel", role: "patient" }));
+    localStorage.setItem("health_token", "saved-token");
+    global.fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => ({ user: { id: 7, name: "Ved Patel", role: "patient" } }),
+    });
+
+    render(<App />);
+
+    await waitFor(() => {
+      expect(global.fetch).toHaveBeenCalledWith(
+        expect.stringContaining("/api/auth/me"),
+        expect.objectContaining({
+          headers: expect.objectContaining({ Authorization: "Bearer saved-token" }),
+        }),
+      );
+    });
   });
 });
 
