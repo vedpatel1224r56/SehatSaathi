@@ -1,0 +1,9 @@
+.env
+.env.*
+!.env.example
+.claude
+node_modules
+dist
+coverage
+*.log
+testwrite.tmp
